@@ -185,6 +185,7 @@ mod tests {
     fn ctx() -> Context {
         Context {
             home: PathBuf::from("/h"),
+            home_dev: 0,
             path_var: OsString::new(),
         }
     }

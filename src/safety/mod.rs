@@ -28,8 +28,11 @@ pub struct Candidate {
 pub struct ApprovedTarget {
     path: PathBuf,
     handling: Handling,
+    /// `Handling::Command` 時，審核當下在 PATH 找到的指令絕對路徑
+    program_path: Option<PathBuf>,
     rule_id: Option<&'static str>,
     size: u64,
+    dev: u64,
     inode: u64,
     mtime: i64,
 }
@@ -41,17 +44,30 @@ impl ApprovedTarget {
     pub fn handling(&self) -> Handling {
         self.handling
     }
+    /// 命令類項目要執行的程式（絕對路徑）；其他處理方式為 `None`
+    pub fn program_path(&self) -> Option<&Path> {
+        self.program_path.as_deref()
+    }
     pub fn rule_id(&self) -> Option<&'static str> {
         self.rule_id
     }
     pub fn size(&self) -> u64 {
         self.size
     }
+    /// 審核時 lstat 取得的裝置編號（必定與 home 相同）
+    pub fn dev(&self) -> u64 {
+        self.dev
+    }
     pub fn inode(&self) -> u64 {
         self.inode
     }
     pub fn mtime(&self) -> i64 {
         self.mtime
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_dev_for_test(&mut self, dev: u64) {
+        self.dev = dev;
     }
 }
 
@@ -63,11 +79,13 @@ pub enum Verdict {
 
 pub fn review(c: Candidate, ctx: &Context) -> Verdict {
     match check(&c, ctx) {
-        Ok((path, handling)) => Verdict::Approved(ApprovedTarget {
-            path,
-            handling,
+        Ok(ok) => Verdict::Approved(ApprovedTarget {
+            path: ok.path,
+            handling: ok.handling,
+            program_path: ok.program_path,
             rule_id: c.rule_id,
             size: c.size,
+            dev: ok.dev,
             inode: c.inode,
             mtime: c.mtime,
         }),
@@ -78,8 +96,20 @@ pub fn review(c: Candidate, ctx: &Context) -> Verdict {
     }
 }
 
-fn check(c: &Candidate, ctx: &Context) -> Result<(PathBuf, Handling), String> {
-    let resolved = resolve(&c.path)?;
+struct Checked {
+    path: PathBuf,
+    handling: Handling,
+    program_path: Option<PathBuf>,
+    dev: u64,
+}
+
+/// 目標必須和 home 在同一個磁碟區（st_dev 相同）：掛載點與其內容一律不處理。
+fn same_volume(target_dev: u64, home_dev: u64) -> bool {
+    target_dev == home_dev
+}
+
+fn check(c: &Candidate, ctx: &Context) -> Result<Checked, String> {
+    let (resolved, meta) = resolve(&c.path)?;
     let rel = resolved
         .strip_prefix(&ctx.home)
         .map_err(|_| "不在家目錄之下".to_string())?;
@@ -87,6 +117,10 @@ fn check(c: &Candidate, ctx: &Context) -> Result<(PathBuf, Handling), String> {
     if let Some(reason) = forbidden::protection_reason_rel(rel) {
         return Err(reason.into());
     }
+    if !same_volume(meta.dev(), ctx.home_dev) {
+        return Err("位於其他磁碟區，不處理".into());
+    }
+    let mut program_path = None;
     let handling = match c.risk {
         Risk::Protected => return Err("受保護的項目".into()),
         // 只有比對到規則的「可重建」才直接刪除；其餘一律最多只能丟垃圾桶
@@ -96,13 +130,23 @@ fn check(c: &Candidate, ctx: &Context) -> Result<(PathBuf, Handling), String> {
             let cmd = c
                 .command
                 .ok_or("此項目沒有可自動執行的官方指令，請手動處理")?;
-            if find_in_path(cmd.program, &ctx.path_var).is_none() {
-                return Err(format!("找不到指令 `{}`", cmd.program));
-            }
+            program_path = Some(
+                find_in_path(cmd.program, &ctx.path_var)
+                    .ok_or_else(|| format!("找不到指令 `{}`", cmd.program))?,
+            );
             Handling::Command(cmd)
         }
     };
-    Ok((resolved, handling))
+    // SystemTrash 一律拒絕符號連結；在這裡就拒絕，不要核准一個執行時必定失敗的項目
+    if handling == Handling::Trash && meta.file_type().is_symlink() {
+        return Err("符號連結無法移到垃圾桶".into());
+    }
+    Ok(Checked {
+        path: resolved,
+        handling,
+        program_path,
+        dev: meta.dev(),
+    })
 }
 
 /// 解析上層目錄的 symlink（目標本身不跟隨），拒絕含 `..` 的路徑，
@@ -114,7 +158,9 @@ fn check(c: &Candidate, ctx: &Context) -> Result<(PathBuf, Handling), String> {
 /// 只用 ASCII case-insensitive 字串比對呼叫端傳入的原始拼寫，就可能被
 /// 這類折疊字元繞過。因此這裡一律先用檔案系統查出真正的拼寫，再交給
 /// `forbidden` 模組做字串比對。
-fn resolve(path: &Path) -> Result<PathBuf, String> {
+///
+/// 同時回傳目標本身的 lstat 結果（不跟隨 symlink）。
+fn resolve(path: &Path) -> Result<(PathBuf, fs::Metadata), String> {
     if !path.is_absolute() {
         return Err("必須是絕對路徑".into());
     }
@@ -137,9 +183,10 @@ fn resolve(path: &Path) -> Result<PathBuf, String> {
     if !meta.file_type().is_symlink() {
         // 不是 symlink：直接 canonicalize 取得磁碟上的真實拼寫。因為最後一個
         // 元件本身確定不是 symlink，這不會意外跟隨到其他檔案。
-        return joined
+        let real = joined
             .canonicalize()
-            .map_err(|e| format!("無法解析路徑：{e}"));
+            .map_err(|e| format!("無法解析路徑：{e}"))?;
+        return Ok((real, meta));
     }
 
     // 是 symlink：目標本身不可跟隨，改為在上層目錄裡找出它自己的真實名稱
@@ -151,7 +198,7 @@ fn resolve(path: &Path) -> Result<PathBuf, String> {
         let entry = entry.map_err(|e| format!("無法讀取上層目錄：{e}"))?;
         if let Ok(m) = entry.metadata() {
             if m.dev() == target_dev && m.ino() == target_ino {
-                return Ok(parent.join(entry.file_name()));
+                return Ok((parent.join(entry.file_name()), meta));
             }
         }
     }
@@ -347,10 +394,16 @@ mod tests {
             cand(link.join("id_rsa"), Risk::UserData, None),
             &ctx
         )));
+        // 連結本身若會被丟垃圾桶 → 拒絕（SystemTrash 一律拒絕符號連結，核准只會在執行時失敗）
         match review(cand(link.clone(), Risk::UserData, None), &ctx) {
+            Verdict::Rejected { reason, .. } => assert_eq!(reason, "符號連結無法移到垃圾桶"),
+            Verdict::Approved(t) => panic!("approved {:?}", t.path()),
+        }
+        // 可重建且比對到規則 → 直接刪除（只移除連結本身）
+        match review(cand(link.clone(), Risk::Regenerable, Some("r")), &ctx) {
             Verdict::Approved(t) => {
                 assert_eq!(t.path(), link.as_path());
-                assert_eq!(t.handling(), Handling::Trash);
+                assert_eq!(t.handling(), Handling::Delete);
             }
             Verdict::Rejected { reason, .. } => panic!("{reason}"),
         }
@@ -382,11 +435,11 @@ mod tests {
         let link = ctx.home.join("sneaky");
         std::os::unix::fs::symlink(ctx.home.join(".ssh"), &link).unwrap();
         let folded = ctx.home.join("\u{017F}neaky");
-        match review(cand(folded, Risk::UserData, None), &ctx) {
+        match review(cand(folded, Risk::Regenerable, Some("r")), &ctx) {
             Verdict::Approved(t) => {
                 // 一定要解析成連結自己在磁碟上的真實拼寫，不可用呼叫端傳入的折疊拼寫。
                 assert_eq!(t.path(), link.as_path());
-                assert_eq!(t.handling(), Handling::Trash);
+                assert_eq!(t.handling(), Handling::Delete);
             }
             Verdict::Rejected { .. } => {
                 // 若這個檔案系統的折疊查找找不到它，拒絕也是可接受的結果 ——
@@ -444,7 +497,112 @@ mod tests {
             args: &["cleanup"],
         };
         ok.command = Some(cmd);
-        assert_eq!(handling(review(ok, &ctx)), Handling::Command(cmd));
+        match review(ok, &ctx) {
+            Verdict::Approved(t) => {
+                assert_eq!(t.handling(), Handling::Command(cmd));
+                // 執行時要跑的就是這裡檢查過的絕對路徑，不再重新查 PATH
+                let program = t.program_path().expect("command target has a program path");
+                assert!(program.is_absolute());
+                assert_eq!(program, Path::new(&ctx.path_var).join("fakebrew"));
+            }
+            Verdict::Rejected { reason, .. } => panic!("{reason}"),
+        }
+    }
+
+    #[test]
+    fn non_command_targets_have_no_program_path() {
+        let (_d, ctx) = setup();
+        let p = ctx.home.join("Documents/report.pdf");
+        match review(cand(p, Risk::UserData, None), &ctx) {
+            Verdict::Approved(t) => assert!(t.program_path().is_none()),
+            Verdict::Rejected { reason, .. } => panic!("{reason}"),
+        }
+    }
+
+    #[test]
+    fn same_volume_compares_devices() {
+        assert!(same_volume(7, 7));
+        assert!(!same_volume(7, 8));
+    }
+
+    #[test]
+    fn target_on_other_volume_is_rejected() {
+        let (_d, mut ctx) = setup();
+        let p = ctx.home.join("Documents/report.pdf");
+        let dev = fs::symlink_metadata(&p).unwrap().dev();
+        match review(cand(p.clone(), Risk::UserData, None), &ctx) {
+            Verdict::Approved(t) => assert_eq!(t.dev(), dev),
+            Verdict::Rejected { reason, .. } => panic!("{reason}"),
+        }
+        // 假裝 home 在另一個磁碟區上
+        ctx.home_dev = dev.wrapping_add(1);
+        match review(cand(p, Risk::UserData, None), &ctx) {
+            Verdict::Rejected { reason, .. } => assert_eq!(reason, "位於其他磁碟區，不處理"),
+            Verdict::Approved(t) => panic!("approved {:?}", t.path()),
+        }
+    }
+
+    /// 真的掛載一個磁碟映像到假 home 底下，確認掛載點會被拒絕。
+    /// 需要 hdiutil（macOS），執行：cargo test -- --ignored mounted_volume
+    #[test]
+    #[ignore]
+    fn mounted_volume_under_home_is_rejected() {
+        use std::process::Command;
+
+        struct Detach(PathBuf);
+        impl Drop for Detach {
+            fn drop(&mut self) {
+                let _ = Command::new("hdiutil")
+                    .args(["detach", "-force"])
+                    .arg(&self.0)
+                    .output();
+            }
+        }
+
+        let (d, ctx) = setup();
+        let img = d.path().join("vol.dmg");
+        let ok = Command::new("hdiutil")
+            .args([
+                "create",
+                "-size",
+                "2m",
+                "-fs",
+                "HFS+",
+                "-volname",
+                "dsweep-test",
+            ])
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            ok.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ok.stderr)
+        );
+        let mnt = ctx.home.join("Projects/mnt");
+        fs::create_dir_all(&mnt).unwrap();
+        let ok = Command::new("hdiutil")
+            .args(["attach", "-nobrowse", "-mountpoint"])
+            .arg(&mnt)
+            .arg(&img)
+            .output()
+            .unwrap();
+        assert!(
+            ok.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ok.stderr)
+        );
+        let _guard = Detach(mnt.clone());
+        fs::write(mnt.join("f.bin"), b"x").unwrap();
+
+        for p in [mnt.clone(), mnt.join("f.bin")] {
+            match review(cand(p.clone(), Risk::Regenerable, Some("r")), &ctx) {
+                Verdict::Rejected { reason, .. } => {
+                    assert_eq!(reason, "位於其他磁碟區，不處理", "{p:?}")
+                }
+                Verdict::Approved(t) => panic!("approved {:?}", t.path()),
+            }
+        }
     }
 
     #[test]
@@ -462,9 +620,15 @@ mod tests {
             name in "[a-zA-Z0-9 ._中文\u{212A}\u{017F}-]{1,20}",
             risk in prop::sample::select(vec![Risk::Regenerable, Risk::UserData, Risk::ToolManaged]),
         ) {
+            prop_assume!(name != "." && name != "..");
             let (_d, ctx) = setup();
-            let v = review(cand(ctx.home.join(base).join(&name), risk, Some("r")), &ctx);
-            prop_assert!(rejected(&v));
+            // 真的在磁碟上建立檔案，讓測試走過 resolve()，而不只是「路徑不存在」的拒絕
+            let p = ctx.home.join(base).join(&name);
+            fs::write(&p, b"x").unwrap();
+            match review(cand(p, risk, Some("r")), &ctx) {
+                Verdict::Rejected { reason, .. } => prop_assert_ne!(reason, "路徑不存在"),
+                Verdict::Approved(t) => prop_assert!(false, "approved {:?}", t.path()),
+            }
         }
 
         #[test]

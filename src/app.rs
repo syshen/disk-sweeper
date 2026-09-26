@@ -503,6 +503,7 @@ mod tests {
     fn app_with(files: &[(&str, u64)]) -> App {
         let ctx = Context {
             home: PathBuf::from("/h"),
+            home_dev: 0,
             path_var: OsString::new(),
         };
         let mut app = App::new(ctx, false, None, 1_800_000_000);
@@ -552,6 +553,7 @@ mod tests {
     fn keys_are_ignored_while_scanning_except_quit() {
         let ctx = Context {
             home: PathBuf::from("/h"),
+            home_dev: 0,
             path_var: OsString::new(),
         };
         let mut app = App::new(ctx, false, None, 0);

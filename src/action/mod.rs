@@ -101,9 +101,11 @@ pub fn execute(
             }
             PreCheck::Proceed { is_dir } => {
                 if let Some(log) = log.as_deref_mut() {
-                    if let Err(_e) = log.write(&pending_record_for(t)) {
+                    if let Err(e) = log.write(&pending_record_for(t)) {
                         halted = true;
-                        results.push(fail_result(t, LOG_FAIL_MSG));
+                        let mut result = fail_result(t, LOG_FAIL_MSG);
+                        append_log_failure_note(&mut result, e);
+                        results.push(result);
                         continue;
                     }
                 }
@@ -162,7 +164,7 @@ fn precheck(t: &ApprovedTarget, dry_run: bool) -> PreCheck {
         }
         Err(e) => return PreCheck::Terminal(Outcome::Failed(e.to_string()), None),
     };
-    if meta.ino() != t.inode() || meta.mtime() != t.mtime() {
+    if meta.dev() != t.dev() || meta.ino() != t.inode() || meta.mtime() != t.mtime() {
         return PreCheck::Terminal(Outcome::Skipped("掃描後已變動".into()), None);
     }
     if dry_run {
@@ -177,7 +179,11 @@ fn precheck(t: &ApprovedTarget, dry_run: bool) -> PreCheck {
 /// 真的動手：刪除、丟垃圾桶，或執行工具的官方指令。
 fn perform(t: &ApprovedTarget, is_dir: bool, trasher: &dyn Trasher) -> (Outcome, Option<String>) {
     if let Handling::Command(cmd) = t.handling() {
-        return match Command::new(cmd.program).args(cmd.args).output() {
+        // 執行審核時檢查過的那個絕對路徑，不再重新查 PATH
+        let Some(program) = t.program_path() else {
+            return (Outcome::Failed("缺少已檢查的指令路徑".into()), None);
+        };
+        return match Command::new(program).args(cmd.args).output() {
             Ok(out) => {
                 let text = format!(
                     "{}{}",
@@ -359,6 +365,18 @@ mod tests {
     }
 
     #[test]
+    fn different_device_after_review_is_skipped() {
+        let (d, ctx) = setup();
+        let f = ctx.home.join("Projects/cache.bin");
+        fs::write(&f, "x").unwrap();
+        let mut t = approve(&f, Risk::Regenerable, Some("r"), None, &ctx);
+        t.set_dev_for_test(t.dev().wrapping_add(1));
+        let res = execute(&[t], false, Some(&mut log_in(&d)), &FakeTrash::default());
+        assert_eq!(res[0].outcome, Outcome::Skipped("掃描後已變動".into()));
+        assert!(f.exists());
+    }
+
+    #[test]
     fn vanished_path_is_skipped() {
         let (d, ctx) = setup();
         let f = ctx.home.join("Projects/gone.bin");
@@ -416,6 +434,7 @@ mod tests {
             args: &["hello"],
         };
         let t = approve(&dir, Risk::ToolManaged, Some("t"), Some(cmd), &ctx);
+        assert!(t.program_path().unwrap().is_absolute());
         let res = execute(&[t], false, Some(&mut log_in(&d)), &FakeTrash::default());
         assert_eq!(res[0].outcome, Outcome::Done);
         assert!(res[0].output.as_deref().unwrap().contains("hello"));
@@ -462,6 +481,15 @@ mod tests {
         let trash = FakeTrash::default();
         let res = execute(&[t1, t2], false, Some(&mut log), &trash);
         assert_eq!(res[0].outcome, Outcome::Failed(LOG_FAIL_MSG.into()));
+        assert!(
+            res[0]
+                .output
+                .as_deref()
+                .unwrap_or("")
+                .contains("模擬磁碟已滿"),
+            "pending-write io error must be reported: {:?}",
+            res[0].output
+        );
         assert_eq!(res[1].outcome, Outcome::Failed(LOG_FAIL_MSG.into()));
         assert!(
             f1.exists(),

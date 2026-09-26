@@ -215,6 +215,7 @@ mod tests {
     fn base_app() -> App {
         let ctx = Context {
             home: PathBuf::from("/h"),
+            home_dev: 0,
             path_var: OsString::new(),
         };
         App::new(
@@ -350,6 +351,7 @@ mod tests {
     fn dry_run_confirm_screen_uses_localized_label_not_english() {
         let ctx = Context {
             home: PathBuf::from("/h"),
+            home_dev: 0,
             path_var: OsString::new(),
         };
         let mut app = App::new(
