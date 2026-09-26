@@ -83,9 +83,9 @@ src/
 
 - `tree::Tree`：`nodes: Vec<Node>`，`Node { name: Box<str>, parent: Option<NodeId>, children: Vec<NodeId>, size: u64, file_count: u64, kind: NodeKind, inode: u64, dev: u64, mtime: i64 }`。提供 `path_of(NodeId) -> PathBuf`、`children_sorted_by_size(NodeId)`、`subtract(NodeId)`（刪除後向上扣除大小）
 - `rules::Rule`：`{ id, category, risk, description, matcher, handling }`；`rules::evaluate(&Tree) -> Vec<Suggestion>`
-- `safety::review(target, ctx) -> Verdict`，`Verdict = Approved(ApprovedTarget) | Rejected(reason)`
-- `safety::ApprovedTarget`：欄位私有、只能在 `safety` 內建立；帶有 `path`、`handling`、掃描時的 `inode`/`mtime`/`size`
-- `action::execute(targets: Vec<ApprovedTarget>, dry_run: bool) -> Vec<ActionResult>`
+- `safety::review(Candidate, &Context) -> Verdict`，`Verdict = Approved(ApprovedTarget) | Rejected { path, reason }`
+- `safety::ApprovedTarget`：欄位私有、只能在 `safety` 內建立；帶有解析後的 `path`、`handling`、審核時 lstat 的 `dev`、掃描時的 `inode`/`mtime`/`size`，命令類另帶審核時在 PATH 找到的指令絕對路徑（執行時只跑這個路徑）
+- `action::execute(&[ApprovedTarget], dry_run: bool, Option<&mut ActionLog>, &dyn Trasher) -> Vec<ActionResult>`
 
 ## 5. 安全模型
 
@@ -99,8 +99,10 @@ src/
 - 下列路徑**及其所有內容**禁止刪除：
   `~/Library/Keychains`、`~/Library/Mobile Documents`（iCloud Drive）、`~/Library/Mail`、`~/Library/Messages`、`~/Library/Accounts`、`~/Library/Cookies`、`~/Library/Preferences`、`~/Library/CloudStorage`、`~/Library/Logs/disk-sweeper`（本工具的紀錄檔）、`~/.ssh`、`~/.gnupg`、`~/.config`、任何 `*.photoslibrary`、任何 `.git` 目錄本身
 - 位於 git 工作目錄內且未比對到 🟢 可重建規則的路徑 → 最高只能是 🟡（垃圾桶）
-- symlink：只刪除連結本身，永不跟隨
+- `review` 會把每個路徑元件解析成磁碟上實際的拼寫（APFS 查找時會做 Unicode 大小寫折疊，例如 U+212A KELVIN SIGN 等同 `K`），再做禁區比對；不存在的路徑一律拒絕
+- symlink：只刪除連結本身，永不跟隨；只能經由 Delete（比對到 🟢 規則）移除，不可移到垃圾桶（「符號連結無法移到垃圾桶」）
 - 與掃描根目錄不同 `st_dev` 的路徑：掃描時跳過
+- 目標的 `st_dev` 與 `$HOME` 不同（掛載點及其內容）→ `review` 拒絕：「位於其他磁碟區，不處理」
 
 ### 5.2 第 2 層：風險分級
 
@@ -115,19 +117,23 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 
 ### 5.3 第 3 層：執行時檢查
 
-- 執行前重新 `lstat`：`inode` 或 `mtime` 與掃描時不同 → 跳過並回報「已變動」
-- 相關 app 執行中（以 `pgrep -x` 檢查程序名稱）→ 在確認畫面顯示警告：Xcode（清 DerivedData 時）、Docker/OrbStack、Simulator
-- 確認畫面列出：路徑、大小、風險等級、處理方式、規則說明
-- 包含任何 🟡 項目或總量 > 10 GB → 需輸入 `yes`；否則按 `y` 即可
+- 標記後、確認前路徑已消失 → 確認畫面顯示為「略過（路徑不存在）」，不會執行
+- 確認後、執行前重新 `lstat`：已消失 → Skipped「已不存在」；`dev`、`inode` 或 `mtime` 與審核／掃描時不同 → Skipped「掃描後已變動」
+- 相關 app 狀態（以 `pgrep -x` 檢查程序名稱）→ 在確認畫面顯示警告：直接刪檔的規則在 Xcode、Simulator 執行中時建議先關閉；用官方指令清理的 Docker 則相反，Docker Desktop 未執行時警告「docker 指令會失敗」
+- 確認畫面列出每一項的風險等級（彩色）、處理方式、大小、路徑，以及規則說明（第二行）；清單可用 ↑↓ / PgUp / PgDn 捲動，放不下時顯示「第 a–b 項，共 N 項」；摘要、所有警告與輸入提示固定在底部，不會被裁掉
+- 包含任何 🟡 項目或總量 > 10 GB → 需輸入 `yes` 再按 Enter；否則只有按 `y` 會執行（Enter 不會）
 - `--dry-run`：流程完整，但 `action` 不做任何檔案系統變更，結果標示為 dry-run
 
 ### 5.4 第 4 層：紀錄
 
-`~/Library/Logs/disk-sweeper/actions.jsonl`，每一個目標一行：
+`~/Library/Logs/disk-sweeper/actions.jsonl`，JSONL、只附加：
 
 ```json
-{"ts":"2026-09-26T10:00:00+08:00","path":"...","size":123,"handling":"delete|trash|command","rule":"xcode-derived-data","result":"ok|skipped|error","detail":"...","dry_run":false}
+{"ts":"2026-09-26T10:00:00+08:00","path":"...","size":123,"handling":"delete|trash|command","rule":"xcode-derived-data","result":"ok|skipped|error|pending","detail":"...","dry_run":false}
 ```
+
+- 真的會動手的目標：動手前先寫一行 `result: "pending"`（意圖），動手後再寫一行結果；`pending` 寫不進去就不動手
+- dry-run 與略過的目標：只寫一行結果
 
 ## 6. 規則清單（v1）
 
@@ -188,6 +194,7 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 - 大小 = `st_blocks * 512`；`st_nlink > 1` 的檔案以 `(dev, inode)` 去重，只算第一次
 - 走訪完成後由葉往根累加 `size` 與 `file_count`
 - 錯誤：`EACCES`/`EPERM` 記錄後繼續；若 `~/Library/Mail`、`~/Library/Safari` 等 TCC 保護路徑讀取失敗，UI 顯示「完全取用磁碟」授權提示
+- TCC 同意對話框（例如「允許存取『文件』檔案夾」）出現時，`open()` 會阻塞直到使用者回應；掃描進度的目前路徑超過 3 秒沒變時，UI 顯示「可能正在等待 macOS 權限對話框」提示
 - 選配 `--min-node-size <SIZE>`：小於此值的檔案不建立節點，只計入父目錄的大小與檔案數
 - 記憶體預估：每節點約 40–60 bytes，200 萬節點約 100–150 MB
 
@@ -210,6 +217,8 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 - 按鍵：`↑↓/jk` 移動、`→/⏎/l` 進入、`←/h` 返回、`space` 標記、`Tab` 切換模式、`d` 清理、`u` 無法讀取清單、`?` 說明、`q` 離開
 - Suggest 模式：可展開的類別群組；在群組上按 `space` 標記整組（🔴 除外）
 - 確認畫面 → 執行中進度 → 結果畫面（成功/跳過/失敗數、實際釋放空間 = 執行前後 `statfs` 可用空間差）
+- 執行中畫面提示：第一次移到垃圾桶時，macOS 可能會詢問是否允許控制 Finder（Automation 權限）
+- 執行期間按下的鍵會被丟棄；結果畫面只有 Enter、Esc、q 會關閉
 - 終端機縮放時重新排版；離開時一定恢復終端機狀態（含 panic hook）
 
 ## 9. CLI
@@ -227,6 +236,7 @@ disk-sweeper [PATH]            # 預設 $HOME；PATH 必須在 $HOME 之下
 - 刪除錯誤：單項失敗不影響其他項，記入結果與紀錄
 - `trash` 失敗：回報錯誤，**不**退而改為直接刪除
 - 紀錄檔寫入失敗：在執行前檢查紀錄目錄是否可寫；不可寫則拒絕執行（dry-run 除外）
+- 執行途中紀錄檔寫入失敗：本項與之後所有目標一律停止、不動手，回報「無法寫入操作紀錄，拒絕執行」（附上 io 錯誤）
 
 ## 11. 測試策略
 
