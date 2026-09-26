@@ -61,7 +61,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         tab(Mode::Suggest, "Suggest"),
     ];
     if app.dry_run {
-        spans.push(Span::styled("  DRY-RUN", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled("  模擬模式", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -278,5 +278,19 @@ mod tests {
         app.freed = Some(800 << 20);
         app.screen = Screen::Result;
         insta::assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn dry_run_confirm_screen_uses_localized_label_not_english() {
+        let ctx = Context { home: PathBuf::from("/h"), path_var: OsString::new() };
+        let mut app = App::new(ctx, true, Some(DiskInfo { total: 228 << 30, free: 10 << 30 }), 1_800_000_000);
+        let tree = tree_from("/h", &[("Projects/web/node_modules/react/index.js", 800 << 20)]);
+        app.on_scan_event(ScanEvent::Done(ScanResult { tree, errors: vec![], elapsed: Duration::ZERO }));
+        app.confirm = Some(ConfirmState { items: vec![], warnings: vec![], need_typed: false, input: String::new() });
+        app.screen = Screen::Confirm;
+        let terminal = render(&app);
+        let rendered = format!("{}", terminal.backend());
+        assert!(rendered.contains("模擬模式"), "{rendered}");
+        assert!(!rendered.contains("DRY-RUN"), "{rendered}");
     }
 }

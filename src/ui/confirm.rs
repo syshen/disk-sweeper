@@ -58,7 +58,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     };
     lines.push(Line::from(Span::styled(prompt, Style::default().add_modifier(Modifier::BOLD))));
 
-    let title = if app.dry_run { " 確認清理（DRY-RUN，不會變更檔案） " } else { " 確認清理 " };
+    let title = if app.dry_run { " 確認清理（模擬模式，不會變更檔案） " } else { " 確認清理 " };
     f.render_widget(Clear, rect);
     f.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL).title(title)),
