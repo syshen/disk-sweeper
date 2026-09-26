@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -13,6 +14,10 @@ use crate::tree::{NodeId, Tree};
 
 const TYPED_CONFIRM_THRESHOLD: u64 = 10 << 30;
 const SMALL_ITEM: u64 = 10 << 20;
+/// 掃描進度的目前路徑超過這麼久沒變，就提示可能在等 macOS 權限對話框
+const SCAN_STALL: Duration = Duration::from_secs(3);
+/// 確認清單 PgUp / PgDn 一次捲動的項目數
+const CONFIRM_PAGE: usize = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -38,11 +43,21 @@ pub struct Mark {
 }
 
 #[derive(Debug)]
+pub struct ConfirmItem {
+    pub node: NodeId,
+    /// 標記時的風險等級（顯示用；處理方式以 verdict 為準）
+    pub risk: Risk,
+    pub verdict: Verdict,
+}
+
+#[derive(Debug)]
 pub struct ConfirmState {
-    pub items: Vec<(NodeId, Verdict)>,
+    pub items: Vec<ConfirmItem>,
     pub warnings: Vec<String>,
     pub need_typed: bool,
     pub input: String,
+    /// 清單最上面顯示的是第幾項（從 0 起算）
+    pub scroll: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +93,8 @@ pub struct App {
     pub freed: Option<i64>,
     pub status: Option<String>,
     pub quit: bool,
+    /// 最近一次掃描進度的目前路徑改變的時間
+    pub last_progress_change: Instant,
     now: i64,
 }
 
@@ -105,13 +122,19 @@ impl App {
             freed: None,
             status: None,
             quit: false,
+            last_progress_change: Instant::now(),
             now,
         }
     }
 
     pub fn on_scan_event(&mut self, ev: ScanEvent) {
         match ev {
-            ScanEvent::Progress(p) => self.progress = p,
+            ScanEvent::Progress(p) => {
+                if p.current != self.progress.current {
+                    self.last_progress_change = Instant::now();
+                }
+                self.progress = p;
+            }
             ScanEvent::Done(r) => {
                 self.needs_fda = scan::needs_full_disk_access(&r.errors, &self.ctx.home);
                 self.errors = r.errors;
@@ -133,6 +156,15 @@ impl App {
                 .map(|(i, s)| (s.node, i))
                 .collect();
         }
+    }
+
+    /// 掃描中且目前路徑超過 3 秒沒變（可能卡在 macOS 權限對話框）
+    pub fn scan_stalled(&self) -> bool {
+        self.stalled_at(Instant::now())
+    }
+
+    pub(crate) fn stalled_at(&self, now: Instant) -> bool {
+        self.tree.is_none() && now.saturating_duration_since(self.last_progress_change) > SCAN_STALL
     }
 
     pub fn explore_children(&self) -> Vec<NodeId> {
@@ -181,9 +213,12 @@ impl App {
             Screen::Main => self.on_main_key(key),
             Screen::Confirm => self.on_confirm_key(key),
             Screen::Result => {
-                self.results.clear();
-                self.freed = None;
-                self.screen = Screen::Main;
+                // 只有明確的按鍵才關閉結果畫面，避免執行期間誤按的鍵把結果直接跳過
+                if matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+                    self.results.clear();
+                    self.freed = None;
+                    self.screen = Screen::Main;
+                }
                 None
             }
             Screen::Help | Screen::Errors => {
@@ -356,7 +391,7 @@ impl App {
             self.status = Some("尚未標記任何項目".into());
             return;
         }
-        let items: Vec<(NodeId, Verdict)> = self
+        let items: Vec<ConfirmItem> = self
             .marks
             .iter()
             .map(|(&id, m)| {
@@ -370,12 +405,16 @@ impl App {
                     inode: n.inode,
                     mtime: n.mtime,
                 };
-                (id, safety::review(c, &self.ctx))
+                ConfirmItem {
+                    node: id,
+                    risk: m.risk,
+                    verdict: safety::review(c, &self.ctx),
+                }
             })
             .collect();
         let approved: Vec<&ApprovedTarget> = items
             .iter()
-            .filter_map(|(_, v)| match v {
+            .filter_map(|i| match &i.verdict {
                 Verdict::Approved(t) => Some(t),
                 Verdict::Rejected { .. } => None,
             })
@@ -389,6 +428,7 @@ impl App {
             warnings,
             need_typed,
             input: String::new(),
+            scroll: 0,
         });
         self.screen = Screen::Confirm;
     }
@@ -397,6 +437,19 @@ impl App {
         let state = self.confirm.as_mut()?;
         if key.code == KeyCode::Esc {
             self.cancel_confirm();
+            return None;
+        }
+        // 捲動只用方向鍵與 PgUp / PgDn：需要輸入 yes 時 j / k 是輸入的字元
+        let last = state.items.len().saturating_sub(1);
+        let scroll = match key.code {
+            KeyCode::Down => Some((state.scroll + 1).min(last)),
+            KeyCode::Up => Some(state.scroll.saturating_sub(1)),
+            KeyCode::PageDown => Some((state.scroll + CONFIRM_PAGE).min(last)),
+            KeyCode::PageUp => Some(state.scroll.saturating_sub(CONFIRM_PAGE)),
+            _ => None,
+        };
+        if let Some(scroll) = scroll {
+            state.scroll = scroll;
             return None;
         }
         if state.need_typed {
@@ -415,7 +468,7 @@ impl App {
             return None;
         }
         match key.code {
-            KeyCode::Char('y') | KeyCode::Enter => self.confirm_execute(),
+            KeyCode::Char('y') => self.confirm_execute(),
             KeyCode::Char('n') => {
                 self.cancel_confirm();
                 None
@@ -434,8 +487,8 @@ impl App {
         let targets: Vec<(NodeId, ApprovedTarget)> = state
             .items
             .into_iter()
-            .filter_map(|(id, v)| match v {
-                Verdict::Approved(t) => Some((id, t)),
+            .filter_map(|i| match i.verdict {
+                Verdict::Approved(t) => Some((i.node, t)),
                 Verdict::Rejected { .. } => None,
             })
             .collect();
@@ -483,7 +536,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::mpsc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
@@ -690,6 +743,8 @@ mod tests {
         app.on_key(key(' '));
         app.on_key(key('d'));
         assert!(!app.confirm.as_ref().unwrap().need_typed);
+        assert!(app.on_key(code(KeyCode::Enter)).is_none()); // 只有 y 會執行
+        assert_eq!(app.screen, Screen::Confirm);
         let Some(Effect::Execute(targets)) = app.on_key(key('y')) else {
             panic!("no effect")
         };
@@ -708,9 +763,105 @@ mod tests {
         assert!(app.suggestions.is_empty());
         assert!(app.marks.is_empty());
         assert_eq!(app.screen, Screen::Result);
-        app.on_key(key('x'));
+        app.on_key(key('x')); // 其他鍵不會關掉結果畫面
+        assert_eq!(app.screen, Screen::Result);
+        app.on_key(code(KeyCode::Enter));
         assert_eq!(app.screen, Screen::Main);
         assert!(app.results.is_empty());
+    }
+
+    #[test]
+    fn result_screen_closes_only_on_enter_esc_or_q() {
+        for (k, closes) in [
+            (key('j'), false),
+            (key(' '), false),
+            (code(KeyCode::Down), false),
+            (code(KeyCode::Enter), true),
+            (code(KeyCode::Esc), true),
+            (key('q'), true),
+        ] {
+            let mut app = app_with(&[("a", 1)]);
+            app.screen = Screen::Result;
+            app.on_key(k);
+            assert_eq!(app.screen == Screen::Main, closes, "{k:?}");
+            assert!(!app.quit, "q on the result screen must not quit");
+        }
+    }
+
+    #[test]
+    fn confirm_list_scrolls_with_arrows_and_typed_j_goes_to_input() {
+        let home = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            write(&home.path().join(format!("Projects/f{i}.txt")), 10);
+        }
+        let mut app = scanned_app(home.path());
+        app.on_key(key('l')); // 進入 Projects
+        for _ in 0..5 {
+            app.on_key(key(' '));
+            app.on_key(key('j'));
+        }
+        app.on_key(key('d'));
+        let state = app.confirm.as_ref().unwrap();
+        assert!(state.need_typed);
+        assert_eq!(state.items.len(), 5);
+        assert!(state.items.iter().all(|i| i.risk == Risk::UserData));
+        assert_eq!(state.scroll, 0);
+
+        app.on_key(code(KeyCode::Down));
+        assert_eq!(app.confirm.as_ref().unwrap().scroll, 1);
+        app.on_key(code(KeyCode::PageDown));
+        assert_eq!(
+            app.confirm.as_ref().unwrap().scroll,
+            4,
+            "clamped to last item"
+        );
+        app.on_key(code(KeyCode::Up));
+        assert_eq!(app.confirm.as_ref().unwrap().scroll, 3);
+        app.on_key(code(KeyCode::PageUp));
+        assert_eq!(app.confirm.as_ref().unwrap().scroll, 0);
+
+        // 需要輸入 yes 時，j / k 是輸入的字元，不是捲動
+        app.on_key(key('j'));
+        app.on_key(key('k'));
+        let state = app.confirm.as_ref().unwrap();
+        assert_eq!(state.input, "jk");
+        assert_eq!(state.scroll, 0);
+    }
+
+    #[test]
+    fn scan_stall_is_detected_when_current_path_stops_changing() {
+        let mut app = App::new(
+            Context {
+                home: PathBuf::from("/h"),
+                home_dev: 0,
+                path_var: OsString::new(),
+            },
+            false,
+            None,
+            0,
+        );
+        let t0 = Instant::now();
+        assert!(!app.scan_stalled(), "a fresh app is not stalled");
+        assert!(app.stalled_at(t0 + Duration::from_secs(4)));
+        let p = Progress {
+            current: "/h/a".into(),
+            ..Progress::default()
+        };
+        app.on_scan_event(ScanEvent::Progress(p.clone()));
+        let changed = app.last_progress_change;
+        assert!(changed >= t0);
+        assert!(!app.stalled_at(changed + Duration::from_secs(2)));
+        assert!(app.stalled_at(changed + Duration::from_secs(4)));
+        // 同一個路徑重複回報不算變動
+        app.on_scan_event(ScanEvent::Progress(Progress { files: 5, ..p }));
+        assert_eq!(app.last_progress_change, changed);
+        // 掃描完成後不算卡住
+        app.on_scan_event(ScanEvent::Done(ScanResult {
+            tree: tree_from("/h", &[("a", 1)]),
+            errors: vec![],
+            elapsed: Duration::ZERO,
+        }));
+        assert!(!app.stalled_at(changed + Duration::from_secs(60)));
     }
 
     #[test]

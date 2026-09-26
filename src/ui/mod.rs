@@ -198,11 +198,11 @@ pub(crate) fn popup(area: Rect, width_pct: u16, height_pct: u16) -> Rect {
 mod tests {
     use super::*;
     use crate::action::{ActionResult, Outcome};
-    use crate::app::ConfirmState;
+    use crate::app::{ConfirmItem, ConfirmState};
     use crate::context::Context;
     use crate::disk::DiskInfo;
     use crate::risk::Handling;
-    use crate::safety::Verdict;
+    use crate::safety::{self, Candidate, Verdict};
     use crate::scan::{Progress, ScanEvent, ScanResult};
     use crate::tree::testutil::{find, tree_from};
     use ratatui::backend::TestBackend;
@@ -308,19 +308,125 @@ mod tests {
         let mut app = sample_app();
         let lib = find(app.tree.as_ref().unwrap(), "Library");
         app.confirm = Some(ConfirmState {
-            items: vec![(
-                lib,
-                Verdict::Rejected {
+            items: vec![ConfirmItem {
+                node: lib,
+                risk: Risk::UserData,
+                verdict: Verdict::Rejected {
                     path: "/h/Library".into(),
                     reason: "系統或使用者的根目錄本身不可刪除".into(),
                 },
-            )],
+            }],
             warnings: vec!["Xcode 正在執行，建議先關閉再清理".into()],
             need_typed: true,
             input: "ye".into(),
+            scroll: 0,
         });
         app.screen = Screen::Confirm;
         insta::assert_snapshot!(render(&app).backend());
+    }
+
+    /// 在真的 temp home 裡建立檔案並經過 safety::review，產生可顯示的核准項目。
+    /// 畫面上的路徑一律以 `~/...` 顯示，所以快照與 temp 目錄位置無關。
+    fn confirm_app_with_many_items(home: &Path, scroll: usize) -> App {
+        let ctx = Context::new(home, OsString::new()).unwrap();
+        let mut app = App::new(ctx, false, None, 1_800_000_000);
+        let tree = tree_from("/h", &[("Projects/x", 1)]);
+        let node = tree.root();
+        app.on_scan_event(ScanEvent::Done(ScanResult {
+            tree,
+            errors: vec![],
+            elapsed: Duration::ZERO,
+        }));
+        let mut items = Vec::new();
+        for i in 0..22 {
+            let p = app
+                .ctx
+                .home
+                .join(format!("Projects/app{i:02}/node_modules"));
+            std::fs::create_dir_all(&p).unwrap();
+            let (risk, rule) = if i % 3 == 0 {
+                (Risk::UserData, None)
+            } else {
+                (Risk::Regenerable, Some("node-modules"))
+            };
+            let c = Candidate {
+                path: p,
+                risk,
+                rule_id: rule,
+                command: None,
+                size: (i + 1) << 20,
+                inode: 0,
+                mtime: 0,
+            };
+            let verdict = safety::review(c, &app.ctx);
+            assert!(matches!(verdict, Verdict::Approved(_)), "{verdict:?}");
+            items.push(ConfirmItem {
+                node,
+                risk,
+                verdict,
+            });
+        }
+        items.push(ConfirmItem {
+            node,
+            risk: Risk::UserData,
+            verdict: Verdict::Rejected {
+                path: app.ctx.home.join("Library"),
+                reason: "系統或使用者的根目錄本身不可刪除".into(),
+            },
+        });
+        app.confirm = Some(ConfirmState {
+            items,
+            warnings: vec![
+                "Xcode 正在執行，建議先關閉再清理".into(),
+                "Docker Desktop 未執行，docker 指令會失敗".into(),
+            ],
+            need_typed: true,
+            input: String::new(),
+            scroll,
+        });
+        app.screen = Screen::Confirm;
+        app
+    }
+
+    #[test]
+    fn confirm_screen_with_many_items_scrolls_and_keeps_prompt() {
+        let home = tempfile::tempdir().unwrap();
+        let app = confirm_app_with_many_items(home.path(), 0);
+        insta::assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn confirm_screen_scrolled_to_the_end_shows_last_item() {
+        let home = tempfile::tempdir().unwrap();
+        let app = confirm_app_with_many_items(home.path(), 22);
+        let text = format!("{}", render(&app).backend());
+        assert!(text.contains("第 23–23 項，共 23 項"), "{text}");
+        assert!(
+            text.contains("~/Library：系統或使用者的根目錄本身不可刪除"),
+            "{text}"
+        );
+        assert!(text.contains("輸入 yes 並按 Enter 執行"), "{text}");
+    }
+
+    #[test]
+    fn scanning_screen_shows_permission_hint_when_stalled() {
+        let mut app = base_app();
+        assert!(!format!("{}", render(&app).backend()).contains("權限對話框"));
+        app.last_progress_change -= Duration::from_secs(10);
+        let text = format!("{}", render(&app).backend());
+        assert!(text.contains("可能正在等待 macOS 權限對話框"), "{text}");
+    }
+
+    #[test]
+    fn running_screen_mentions_finder_automation_prompt() {
+        let mut app = sample_app();
+        app.screen = Screen::Running;
+        let text = format!("{}", render(&app).backend());
+        assert!(text.contains("執行中，請稍候"), "{text}");
+        assert!(
+            text.contains("第一次移到垃圾桶時，macOS 可能會詢問是否允許控制 Finder"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -377,6 +483,7 @@ mod tests {
             warnings: vec![],
             need_typed: false,
             input: String::new(),
+            scroll: 0,
         });
         app.screen = Screen::Confirm;
         let terminal = render(&app);

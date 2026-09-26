@@ -27,8 +27,14 @@ pub fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
             format!(" {}", display_path(&p.current, &app.ctx.home)),
             Style::default().fg(Color::DarkGray),
         )),
-        Line::from(""),
     ];
+    if app.scan_stalled() {
+        lines.push(Line::from(Span::styled(
+            " 可能正在等待 macOS 權限對話框（請切到對話框允許或拒絕）",
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+    lines.push(Line::from(""));
     let max = p.top.first().map_or(0, |t| t.1);
     for (name, size) in &p.top {
         lines.push(Line::from(format!(
@@ -45,11 +51,18 @@ pub fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
 }
 
 pub fn draw_running(f: &mut Frame, area: Rect) {
-    let rect = popup(area, 40, 20);
+    let rect = popup(area, 70, 20);
     f.render_widget(Clear, rect);
     f.render_widget(
-        Paragraph::new(" 執行中，請稍候…")
-            .block(Block::default().borders(Borders::ALL).title(" 清理 ")),
+        Paragraph::new(vec![
+            Line::from(" 執行中，請稍候…"),
+            Line::from(Span::styled(
+                " 第一次移到垃圾桶時，macOS 可能會詢問是否允許控制 Finder",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ])
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title(" 清理 ")),
         rect,
     );
 }

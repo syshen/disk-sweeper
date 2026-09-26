@@ -101,6 +101,10 @@ fn run(
         if let Some(Effect::Execute(targets)) = app.on_key(key) {
             terminal.draw(|f| ui::draw(f, app))?; // 先畫出「執行中」
             execute(app, targets, root);
+            // 清理期間按下的鍵都丟掉，免得一回來就把結果畫面關掉
+            while event::poll(Duration::ZERO)? {
+                let _ = event::read()?;
+            }
         }
     }
     Ok(())
