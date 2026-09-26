@@ -142,6 +142,9 @@ impl App {
                 self.status = Some(format!("掃描完成，耗時 {:.1} 秒", r.elapsed.as_secs_f64()));
                 self.tree = Some(r.tree);
                 self.refresh_suggestions();
+                // 掃描完成先顯示清理建議；Tab 可切回 Explore
+                self.mode = Mode::Suggest;
+                self.suggest_cursor = 0;
             }
         }
     }
@@ -566,6 +569,7 @@ mod tests {
             errors: vec![],
             elapsed: Duration::ZERO,
         }));
+        app.mode = Mode::Explore; // 多數測試從 Explore 開始操作
         app
     }
 
@@ -583,6 +587,7 @@ mod tests {
         );
         let mut app = App::new(ctx, false, None, chrono::Local::now().timestamp());
         app.on_scan_event(ScanEvent::Done(result));
+        app.mode = Mode::Explore; // 多數測試從 Explore 開始操作
         app
     }
 
@@ -600,6 +605,26 @@ mod tests {
         assert!(app.tree.is_some());
         assert_eq!(app.suggestions.len(), 1);
         assert_eq!(app.suggestions[0].rule_id, "node-modules");
+    }
+
+    #[test]
+    fn scan_done_switches_to_suggest_mode() {
+        let ctx = Context {
+            home: PathBuf::from("/h"),
+            home_dev: 0,
+            path_var: OsString::new(),
+        };
+        let mut app = App::new(ctx, false, None, 0);
+        app.suggest_cursor = 3;
+        app.on_scan_event(ScanEvent::Done(ScanResult {
+            tree: tree_from("/h", &[("a", 1)]),
+            errors: vec![],
+            elapsed: Duration::ZERO,
+        }));
+        assert_eq!(app.mode, Mode::Suggest);
+        assert_eq!(app.suggest_cursor, 0);
+        app.on_key(code(KeyCode::Tab));
+        assert_eq!(app.mode, Mode::Explore);
     }
 
     #[test]

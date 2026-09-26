@@ -206,7 +206,6 @@ mod tests {
     use crate::scan::{Progress, ScanEvent, ScanResult};
     use crate::tree::testutil::{find, tree_from};
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use std::ffi::OsString;
     use std::path::PathBuf;
@@ -246,6 +245,7 @@ mod tests {
             errors: vec![],
             elapsed: Duration::ZERO,
         }));
+        app.mode = Mode::Explore; // 快照以 Explore 為底層畫面
         app
     }
 
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn suggest_screen() {
         let mut app = sample_app();
-        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.mode = Mode::Suggest;
         insta::assert_snapshot!(render(&app).backend());
     }
 
@@ -337,6 +337,7 @@ mod tests {
             errors: vec![],
             elapsed: Duration::ZERO,
         }));
+        app.mode = Mode::Explore; // 快照以 Explore 為底層畫面
         let mut items = Vec::new();
         for i in 0..22 {
             let p = app
