@@ -5,7 +5,9 @@
 pub mod forbidden;
 
 use std::ffi::OsStr;
-use std::os::unix::fs::PermissionsExt;
+use std::fs;
+use std::io::ErrorKind;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
 use crate::context::Context;
@@ -96,7 +98,15 @@ fn check(c: &Candidate, ctx: &Context) -> Result<(PathBuf, Handling), String> {
     Ok((resolved, handling))
 }
 
-/// 解析上層目錄的 symlink（目標本身不跟隨），並拒絕含 `..` 的路徑。
+/// 解析上層目錄的 symlink（目標本身不跟隨），拒絕含 `..` 的路徑，
+/// 並把最後一個路徑元件解析成磁碟上實際的拼寫。
+///
+/// APFS 預設（大小寫不敏感）在查找檔名時，除了忽略大小寫，還會對某些
+/// Unicode 字元做折疊比對 —— 例如 U+212A KELVIN SIGN 會被當成 `K`、
+/// U+017F LATIN SMALL LETTER LONG S 會被當成 `s`。若後續的保護清單比對
+/// 只用 ASCII case-insensitive 字串比對呼叫端傳入的原始拼寫，就可能被
+/// 這類折疊字元繞過。因此這裡一律先用檔案系統查出真正的拼寫，再交給
+/// `forbidden` 模組做字串比對。
 fn resolve(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
         return Err("必須是絕對路徑".into());
@@ -107,7 +117,34 @@ fn resolve(path: &Path) -> Result<PathBuf, String> {
     let name = path.file_name().ok_or("路徑沒有檔名")?;
     let parent = path.parent().ok_or("路徑沒有上層目錄")?;
     let parent = parent.canonicalize().map_err(|e| format!("無法解析上層目錄：{e}"))?;
-    Ok(parent.join(name))
+    let joined = parent.join(name);
+
+    let meta = match fs::symlink_metadata(&joined) {
+        Ok(m) => m,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Err("路徑不存在".into()),
+        Err(e) => return Err(e.to_string()),
+    };
+
+    if !meta.file_type().is_symlink() {
+        // 不是 symlink：直接 canonicalize 取得磁碟上的真實拼寫。因為最後一個
+        // 元件本身確定不是 symlink，這不會意外跟隨到其他檔案。
+        return joined.canonicalize().map_err(|e| format!("無法解析路徑：{e}"));
+    }
+
+    // 是 symlink：目標本身不可跟隨，改為在上層目錄裡找出它自己的真實名稱
+    // （以 (dev, inode) 比對，因為呼叫端拼寫可能是折疊變體）。
+    let target_dev = meta.dev();
+    let target_ino = meta.ino();
+    let entries = fs::read_dir(&parent).map_err(|e| format!("無法讀取上層目錄：{e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("無法讀取上層目錄：{e}"))?;
+        if let Ok(m) = entry.metadata() {
+            if m.dev() == target_dev && m.ino() == target_ino {
+                return Ok(parent.join(entry.file_name()));
+            }
+        }
+    }
+    Err("找不到符號連結的實際名稱".into())
 }
 
 /// 純字串比對（不碰檔案系統），給 UI 標示「受保護」用。
@@ -119,9 +156,10 @@ pub fn protection_reason(path: &Path, ctx: &Context) -> Option<&'static str> {
 }
 
 pub fn find_in_path(program: &str, path_var: &OsStr) -> Option<PathBuf> {
-    std::env::split_paths(path_var).map(|dir| dir.join(program)).find(|p| {
-        p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    })
+    std::env::split_paths(path_var)
+        .filter(|dir| !dir.as_os_str().is_empty() && dir.is_absolute())
+        .map(|dir| dir.join(program))
+        .find(|p| p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
 #[cfg(test)]
@@ -141,12 +179,15 @@ mod tests {
             ".ssh",
             ".config",
             "Documents",
+            "Desktop",
             "Projects/repo/.git",
             "Pictures/Photos Library.photoslibrary",
+            "Pictures/P.photoslibrary",
             "bin",
         ] {
             fs::create_dir_all(d.path().join(p)).unwrap();
         }
+        fs::write(d.path().join("Documents/report.pdf"), b"pdf").unwrap();
         let bin = d.path().join("bin/fakebrew");
         fs::write(&bin, "#!/bin/sh\n").unwrap();
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
@@ -246,6 +287,47 @@ mod tests {
     }
 
     #[test]
+    fn unicode_fold_variants_of_protected_paths_are_rejected() {
+        let (_d, ctx) = setup();
+        for rel in [
+            "Library/\u{212A}eychains",
+            "Library/\u{212A}eychains/",
+            ".\u{017F}sh",
+            "Des\u{212A}top",
+            "Pictures/P.photo\u{017F}library",
+        ] {
+            assert!(rejected(&review(cand(ctx.home.join(rel), Risk::Regenerable, Some("r")), &ctx)), "{rel}");
+        }
+    }
+
+    #[test]
+    fn symlink_fold_variant_name_resolves_to_real_name_or_is_rejected() {
+        let (_d, ctx) = setup();
+        let link = ctx.home.join("sneaky");
+        std::os::unix::fs::symlink(ctx.home.join(".ssh"), &link).unwrap();
+        let folded = ctx.home.join("\u{017F}neaky");
+        match review(cand(folded, Risk::UserData, None), &ctx) {
+            Verdict::Approved(t) => {
+                // 一定要解析成連結自己在磁碟上的真實拼寫，不可用呼叫端傳入的折疊拼寫。
+                assert_eq!(t.path(), link.as_path());
+                assert_eq!(t.handling(), Handling::Trash);
+            }
+            Verdict::Rejected { .. } => {
+                // 若這個檔案系統的折疊查找找不到它，拒絕也是可接受的結果 ——
+                // 唯一不可接受的是「核准了一個拼寫不同的路徑」。
+            }
+        }
+    }
+
+    #[test]
+    fn find_in_path_skips_empty_and_relative_entries() {
+        let (_d, ctx) = setup();
+        let real_bin = ctx.home.join("bin");
+        let path_var = std::ffi::OsString::from(format!(":relative/bin:{}", real_bin.display()));
+        assert_eq!(find_in_path("fakebrew", &path_var), Some(real_bin.join("fakebrew")));
+    }
+
+    #[test]
     fn git_internals_and_photos_library_are_rejected() {
         let (_d, ctx) = setup();
         for rel in ["Projects/repo/.git", "Projects/repo/.git/objects", "Pictures/Photos Library.photoslibrary"] {
@@ -279,7 +361,7 @@ mod tests {
         #[test]
         fn anything_directly_under_protected_trees_is_rejected(
             base in prop::sample::select(vec!["Library/Keychains", ".ssh", "Library/Mail", ".config"]),
-            name in "[a-zA-Z0-9 ._中文-]{1,20}",
+            name in "[a-zA-Z0-9 ._中文\u{212A}\u{017F}-]{1,20}",
             risk in prop::sample::select(vec![Risk::Regenerable, Risk::UserData, Risk::ToolManaged]),
         ) {
             let (_d, ctx) = setup();
