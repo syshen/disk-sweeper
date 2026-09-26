@@ -126,7 +126,12 @@ impl App {
     fn refresh_suggestions(&mut self) {
         if let Some(tree) = &self.tree {
             self.suggestions = rules::evaluate(tree, &self.ctx, self.now);
-            self.sugg_by_node = self.suggestions.iter().enumerate().map(|(i, s)| (s.node, i)).collect();
+            self.sugg_by_node = self
+                .suggestions
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.node, i))
+                .collect();
         }
     }
 
@@ -161,7 +166,9 @@ impl App {
     }
 
     pub fn marked_total(&self) -> u64 {
-        self.tree.as_ref().map_or(0, |t| self.marks.keys().map(|&id| t.node(id).size).sum())
+        self.tree
+            .as_ref()
+            .map_or(0, |t| self.marks.keys().map(|&id| t.node(id).size).sum())
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Effect> {
@@ -210,10 +217,14 @@ impl App {
 
     fn on_explore_key(&mut self, code: KeyCode) {
         let children = self.explore_children();
-        let Some(&(_, cursor)) = self.explore.last() else { return };
+        let Some(&(_, cursor)) = self.explore.last() else {
+            return;
+        };
         let selected = children.get(cursor).copied();
         match code {
-            KeyCode::Down | KeyCode::Char('j') => self.set_explore_cursor((cursor + 1).min(children.len().saturating_sub(1))),
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.set_explore_cursor((cursor + 1).min(children.len().saturating_sub(1)))
+            }
             KeyCode::Up | KeyCode::Char('k') => self.set_explore_cursor(cursor.saturating_sub(1)),
             KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => {
                 if let (Some(id), Some(tree)) = (selected, &self.tree) {
@@ -248,7 +259,9 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.suggest_cursor = (self.suggest_cursor + 1).min(rows.len().saturating_sub(1))
             }
-            KeyCode::Up | KeyCode::Char('k') => self.suggest_cursor = self.suggest_cursor.saturating_sub(1),
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.suggest_cursor = self.suggest_cursor.saturating_sub(1)
+            }
             KeyCode::Right | KeyCode::Enter | KeyCode::Char('l') => {
                 if let Some(SuggestRow::Header(cat)) = rows.get(self.suggest_cursor) {
                     let i = *cat as usize;
@@ -278,7 +291,10 @@ impl App {
     }
 
     fn toggle_group(&mut self, cat: Category) {
-        let nodes: Vec<NodeId> = self.visible_items(cat).map(|i| self.suggestions[i].node).collect();
+        let nodes: Vec<NodeId> = self
+            .visible_items(cat)
+            .map(|i| self.suggestions[i].node)
+            .collect();
         if nodes.is_empty() {
             return;
         }
@@ -318,9 +334,17 @@ impl App {
         let mark = match self.sugg_by_node.get(&id) {
             Some(&i) => {
                 let s = &self.suggestions[i];
-                Mark { risk: s.risk, rule_id: Some(s.rule_id), command: s.command }
+                Mark {
+                    risk: s.risk,
+                    rule_id: Some(s.rule_id),
+                    command: s.command,
+                }
             }
-            None => Mark { risk: Risk::UserData, rule_id: None, command: None },
+            None => Mark {
+                risk: Risk::UserData,
+                rule_id: None,
+                command: None,
+            },
         };
         self.marks.retain(|&m, _| !tree.is_ancestor(id, m));
         self.marks.insert(id, mark);
@@ -357,9 +381,15 @@ impl App {
             })
             .collect();
         let total: u64 = approved.iter().map(|t| t.size()).sum();
-        let need_typed = total > TYPED_CONFIRM_THRESHOLD || approved.iter().any(|t| t.handling() == Handling::Trash);
+        let need_typed = total > TYPED_CONFIRM_THRESHOLD
+            || approved.iter().any(|t| t.handling() == Handling::Trash);
         let warnings = procs::running_app_warnings(approved.iter().filter_map(|t| t.rule_id()));
-        self.confirm = Some(ConfirmState { items, warnings, need_typed, input: String::new() });
+        self.confirm = Some(ConfirmState {
+            items,
+            warnings,
+            need_typed,
+            input: String::new(),
+        });
         self.screen = Screen::Confirm;
     }
 
@@ -471,10 +501,17 @@ mod tests {
 
     /// 以 /h 為 home 的假樹（不碰檔案系統）
     fn app_with(files: &[(&str, u64)]) -> App {
-        let ctx = Context { home: PathBuf::from("/h"), path_var: OsString::new() };
+        let ctx = Context {
+            home: PathBuf::from("/h"),
+            path_var: OsString::new(),
+        };
         let mut app = App::new(ctx, false, None, 1_800_000_000);
         let tree = tree_from("/h", files);
-        app.on_scan_event(ScanEvent::Done(ScanResult { tree, errors: vec![], elapsed: Duration::ZERO }));
+        app.on_scan_event(ScanEvent::Done(ScanResult {
+            tree,
+            errors: vec![],
+            elapsed: Duration::ZERO,
+        }));
         app
     }
 
@@ -482,7 +519,14 @@ mod tests {
     fn scanned_app(home: &Path) -> App {
         let ctx = Context::new(home, OsString::from("/usr/bin:/bin")).unwrap();
         let (tx, _rx) = mpsc::channel();
-        let result = scan::scan(&ctx.home, &ScanOptions { threads: 2, min_node_size: 0 }, &tx);
+        let result = scan::scan(
+            &ctx.home,
+            &ScanOptions {
+                threads: 2,
+                min_node_size: 0,
+            },
+            &tx,
+        );
         let mut app = App::new(ctx, false, None, chrono::Local::now().timestamp());
         app.on_scan_event(ScanEvent::Done(result));
         app
@@ -495,7 +539,10 @@ mod tests {
 
     #[test]
     fn done_event_builds_tree_and_suggestions() {
-        let app = app_with(&[("Projects/web/package.json", 1), ("Projects/web/node_modules/a/i.js", 100)]);
+        let app = app_with(&[
+            ("Projects/web/package.json", 1),
+            ("Projects/web/node_modules/a/i.js", 100),
+        ]);
         assert!(app.tree.is_some());
         assert_eq!(app.suggestions.len(), 1);
         assert_eq!(app.suggestions[0].rule_id, "node-modules");
@@ -503,7 +550,10 @@ mod tests {
 
     #[test]
     fn keys_are_ignored_while_scanning_except_quit() {
-        let ctx = Context { home: PathBuf::from("/h"), path_var: OsString::new() };
+        let ctx = Context {
+            home: PathBuf::from("/h"),
+            path_var: OsString::new(),
+        };
         let mut app = App::new(ctx, false, None, 0);
         app.on_key(code(KeyCode::Tab));
         assert_eq!(app.mode, Mode::Explore);
@@ -568,7 +618,10 @@ mod tests {
             ("Projects/b/node_modules/x", 20 << 20),
         ]);
         app.on_key(code(KeyCode::Tab));
-        assert_eq!(app.suggest_rows()[0], SuggestRow::Header(Category::DevTools));
+        assert_eq!(
+            app.suggest_rows()[0],
+            SuggestRow::Header(Category::DevTools)
+        );
         app.on_key(key(' '));
         assert_eq!(app.marks.len(), 2);
         app.on_key(key(' '));
@@ -577,7 +630,10 @@ mod tests {
 
     #[test]
     fn small_items_are_hidden_until_toggled() {
-        let mut app = app_with(&[("Projects/a/package.json", 1), ("Projects/a/node_modules/x", 1)]);
+        let mut app = app_with(&[
+            ("Projects/a/package.json", 1),
+            ("Projects/a/node_modules/x", 1),
+        ]);
         app.on_key(code(KeyCode::Tab));
         assert_eq!(app.visible_items(Category::DevTools).count(), 0);
         app.on_key(key('a'));
@@ -606,7 +662,9 @@ mod tests {
         assert!(app.on_key(code(KeyCode::Enter)).is_none());
         assert_eq!(app.screen, Screen::Confirm);
         typed(&mut app, "yes");
-        let Some(Effect::Execute(targets)) = app.on_key(code(KeyCode::Enter)) else { panic!("no effect") };
+        let Some(Effect::Execute(targets)) = app.on_key(code(KeyCode::Enter)) else {
+            panic!("no effect")
+        };
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].1.handling(), Handling::Trash);
         assert_eq!(app.screen, Screen::Running);
@@ -618,14 +676,21 @@ mod tests {
         write(&home.path().join("Projects/web/package.json"), 10);
         write(&home.path().join("Projects/web/node_modules/a/i.js"), 5000);
         let mut app = scanned_app(home.path());
-        let root_before = app.tree.as_ref().unwrap().node(app.tree.as_ref().unwrap().root()).size;
+        let root_before = app
+            .tree
+            .as_ref()
+            .unwrap()
+            .node(app.tree.as_ref().unwrap().root())
+            .size;
         app.on_key(code(KeyCode::Tab));
         app.on_key(key('a')); // 顯示小項目
         app.on_key(key('j')); // 移到 node_modules
         app.on_key(key(' '));
         app.on_key(key('d'));
         assert!(!app.confirm.as_ref().unwrap().need_typed);
-        let Some(Effect::Execute(targets)) = app.on_key(key('y')) else { panic!("no effect") };
+        let Some(Effect::Execute(targets)) = app.on_key(key('y')) else {
+            panic!("no effect")
+        };
         let (id, target) = &targets[0];
         let removed = app.tree.as_ref().unwrap().node(*id).size;
         let result = ActionResult {

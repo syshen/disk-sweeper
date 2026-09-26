@@ -13,8 +13,16 @@ const MAX_ERRORS_SHOWN: usize = 200;
 pub fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
     let p = &app.progress;
     let mut lines = vec![
-        Line::from(Span::styled(" 掃描中…", Style::default().add_modifier(Modifier::BOLD))),
-        Line::from(format!(" 已掃描 {} 個項目 · {} · 無法讀取 {}", p.files, format_size(p.bytes), p.errors)),
+        Line::from(Span::styled(
+            " 掃描中…",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!(
+            " 已掃描 {} 個項目 · {} · 無法讀取 {}",
+            p.files,
+            format_size(p.bytes),
+            p.errors
+        )),
         Line::from(Span::styled(
             format!(" {}", display_path(&p.current, &app.ctx.home)),
             Style::default().fg(Color::DarkGray),
@@ -23,16 +31,25 @@ pub fn draw_scanning(f: &mut Frame, area: Rect, app: &App) {
     ];
     let max = p.top.first().map_or(0, |t| t.1);
     for (name, size) in &p.top {
-        lines.push(Line::from(format!(" {} {:>7} {}", pad(name, 30), format_size(*size), bar(*size, max, 20))));
+        lines.push(Line::from(format!(
+            " {} {:>7} {}",
+            pad(name, 30),
+            format_size(*size),
+            bar(*size, max, 20)
+        )));
     }
-    f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" 掃描 ")), area);
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" 掃描 ")),
+        area,
+    );
 }
 
 pub fn draw_running(f: &mut Frame, area: Rect) {
     let rect = popup(area, 40, 20);
     f.render_widget(Clear, rect);
     f.render_widget(
-        Paragraph::new(" 執行中，請稍候…").block(Block::default().borders(Borders::ALL).title(" 清理 ")),
+        Paragraph::new(" 執行中，請稍候…")
+            .block(Block::default().borders(Borders::ALL).title(" 清理 ")),
         rect,
     );
 }
@@ -60,7 +77,10 @@ pub fn draw_help(f: &mut Frame, area: Rect) {
     .map(Line::from)
     .collect();
     f.render_widget(Clear, area);
-    f.render_widget(Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" 說明 ")), area);
+    f.render_widget(
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" 說明 ")),
+        area,
+    );
 }
 
 pub fn draw_errors(f: &mut Frame, area: Rect, app: &App) {
@@ -73,15 +93,24 @@ pub fn draw_errors(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(""));
     }
     for e in app.errors.iter().take(MAX_ERRORS_SHOWN) {
-        lines.push(Line::from(format!(" {}：{}", display_path(&e.path, &app.ctx.home), e.message)));
+        lines.push(Line::from(format!(
+            " {}：{}",
+            display_path(&e.path, &app.ctx.home),
+            e.message
+        )));
     }
     if app.errors.len() > MAX_ERRORS_SHOWN {
-        lines.push(Line::from(format!(" … 還有 {} 項", app.errors.len() - MAX_ERRORS_SHOWN)));
+        lines.push(Line::from(format!(
+            " … 還有 {} 項",
+            app.errors.len() - MAX_ERRORS_SHOWN
+        )));
     }
     let title = format!(" 無法讀取的路徑（{}） · 按任意鍵返回 ", app.errors.len());
     f.render_widget(Clear, area);
     f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL).title(title)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }

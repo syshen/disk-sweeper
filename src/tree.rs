@@ -58,7 +58,10 @@ impl Tree {
             dev: meta.dev,
             mtime: meta.mtime,
         };
-        Self { root_path, nodes: vec![root] }
+        Self {
+            root_path,
+            nodes: vec![root],
+        }
     }
 
     pub fn root(&self) -> NodeId {
@@ -160,12 +163,18 @@ impl Tree {
     }
 
     pub fn child_named(&self, id: NodeId, name: &str) -> Option<NodeId> {
-        self.nodes[id.index()].children.iter().copied().find(|c| &*self.node(*c).name == name)
+        self.nodes[id.index()]
+            .children
+            .iter()
+            .copied()
+            .find(|c| &*self.node(*c).name == name)
     }
 
     /// 刪除成功後呼叫：從父節點移除並從所有祖先扣除大小。重複呼叫不會重複扣除。
     pub fn subtract(&mut self, id: NodeId) {
-        let Some(parent) = self.node(id).parent else { return };
+        let Some(parent) = self.node(id).parent else {
+            return;
+        };
         if !self.nodes[parent.index()].children.contains(&id) {
             return;
         }
@@ -198,10 +207,24 @@ pub mod testutil {
                 cur = match t.child_named(cur, part) {
                     Some(c) => c,
                     None => {
-                        let kind = if last && !is_dir { NodeKind::File } else { NodeKind::Dir };
+                        let kind = if last && !is_dir {
+                            NodeKind::File
+                        } else {
+                            NodeKind::Dir
+                        };
                         let inode = t.len() as u64;
                         let size = if last { *size } else { 0 };
-                        t.add(cur, part, kind, NodeMeta { size, inode, dev: 1, mtime: 0 })
+                        t.add(
+                            cur,
+                            part,
+                            kind,
+                            NodeMeta {
+                                size,
+                                inode,
+                                dev: 1,
+                                mtime: 0,
+                            },
+                        )
                     }
                 };
             }
@@ -212,7 +235,8 @@ pub mod testutil {
 
     pub fn find(t: &Tree, rel: &str) -> NodeId {
         rel.split('/').fold(t.root(), |cur, part| {
-            t.child_named(cur, part).unwrap_or_else(|| panic!("no node {rel}"))
+            t.child_named(cur, part)
+                .unwrap_or_else(|| panic!("no node {rel}"))
         })
     }
 }
@@ -243,8 +267,11 @@ mod tests {
     #[test]
     fn children_sorted_by_size_desc_then_name() {
         let t = tree_from("/h", &[("small", 1), ("big", 10), ("also-big", 10)]);
-        let names: Vec<&str> =
-            t.children_sorted_by_size(t.root()).iter().map(|&c| &*t.node(c).name).collect();
+        let names: Vec<&str> = t
+            .children_sorted_by_size(t.root())
+            .iter()
+            .map(|&c| &*t.node(c).name)
+            .collect();
         assert_eq!(names, ["also-big", "big", "small"]);
     }
 

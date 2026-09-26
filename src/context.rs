@@ -13,7 +13,10 @@ pub struct Context {
 
 impl Context {
     pub fn new(home: impl AsRef<Path>, path_var: OsString) -> io::Result<Self> {
-        Ok(Self { home: home.as_ref().canonicalize()?, path_var })
+        Ok(Self {
+            home: home.as_ref().canonicalize()?,
+            path_var,
+        })
     }
 
     pub fn from_env() -> io::Result<Self> {

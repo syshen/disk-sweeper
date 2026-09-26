@@ -12,7 +12,9 @@ use crate::size::format_size;
 use crate::tree::NodeKind;
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App) {
-    let (Some(tree), Some(&(dir, cursor))) = (&app.tree, app.explore.last()) else { return };
+    let (Some(tree), Some(&(dir, cursor))) = (&app.tree, app.explore.last()) else {
+        return;
+    };
     let dir_path = tree.path_of(dir);
     let total = tree.node(dir).size;
     let items: Vec<ListItem> = app
@@ -20,7 +22,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         .into_iter()
         .map(|id| {
             let n = tree.node(id);
-            let mark = if app.marks.contains_key(&id) { "✓" } else { " " };
+            let mark = if app.marks.contains_key(&id) {
+                "✓"
+            } else {
+                " "
+            };
             let arrow = if n.kind == NodeKind::Dir { "▸" } else { " " };
             let mut spans = vec![
                 Span::raw(format!("{mark}{arrow} ")),
@@ -29,14 +35,21 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
                 Span::raw(bar(n.size, total, 20)),
             ];
             if let Some(s) = app.suggestion_for(id) {
-                spans.push(Span::styled(format!("  {} · {}", s.risk.label(), s.rule_id), risk_style(s.risk)));
+                spans.push(Span::styled(
+                    format!("  {} · {}", s.risk.label(), s.rule_id),
+                    risk_style(s.risk),
+                ));
             } else if safety::protection_reason(&dir_path.join(&*n.name), &app.ctx).is_some() {
                 spans.push(Span::styled("  受保護", risk_style(Risk::Protected)));
             }
             ListItem::new(Line::from(spans))
         })
         .collect();
-    let title = format!(" {} · {} ", display_path(&dir_path, &app.ctx.home), format_size(total));
+    let title = format!(
+        " {} · {} ",
+        display_path(&dir_path, &app.ctx.home),
+        format_size(total)
+    );
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));

@@ -29,7 +29,9 @@ impl Trasher for SystemTrash {
         // 改為直接刪除。查不出 metadata（例如路徑已消失、權限問題）一律視為
         // 「無法確認安全性」而拒絕，不可放行給 `trash::delete`（fail closed）。
         match std::fs::symlink_metadata(path) {
-            Ok(meta) if meta.file_type().is_symlink() => Err("無法安全地將符號連結移到垃圾桶".into()),
+            Ok(meta) if meta.file_type().is_symlink() => {
+                Err("無法安全地將符號連結移到垃圾桶".into())
+            }
             Ok(_) => trash::delete(path).map_err(|e| e.to_string()),
             Err(e) => Err(e.to_string()),
         }
@@ -121,7 +123,13 @@ pub fn execute(
 }
 
 fn to_result(t: &ApprovedTarget, outcome: Outcome, output: Option<String>) -> ActionResult {
-    ActionResult { path: t.path().to_path_buf(), size: t.size(), handling: t.handling(), outcome, output }
+    ActionResult {
+        path: t.path().to_path_buf(),
+        size: t.size(),
+        handling: t.handling(),
+        outcome,
+        output,
+    }
 }
 
 fn fail_result(t: &ApprovedTarget, msg: &str) -> ActionResult {
@@ -161,7 +169,9 @@ fn precheck(t: &ApprovedTarget, dry_run: bool) -> PreCheck {
         return PreCheck::Terminal(Outcome::DryRun, None);
     }
     // symlink_metadata 對 symlink 回傳 is_dir() == false，所以只會刪除連結本身
-    PreCheck::Proceed { is_dir: meta.is_dir() }
+    PreCheck::Proceed {
+        is_dir: meta.is_dir(),
+    }
 }
 
 /// 真的動手：刪除、丟垃圾桶，或執行工具的官方指令。
@@ -169,11 +179,18 @@ fn perform(t: &ApprovedTarget, is_dir: bool, trasher: &dyn Trasher) -> (Outcome,
     if let Handling::Command(cmd) = t.handling() {
         return match Command::new(cmd.program).args(cmd.args).output() {
             Ok(out) => {
-                let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
                 if out.status.success() {
                     (Outcome::Done, Some(text))
                 } else {
-                    (Outcome::Failed(format!("指令結束狀態：{}", out.status)), Some(text))
+                    (
+                        Outcome::Failed(format!("指令結束狀態：{}", out.status)),
+                        Some(text),
+                    )
                 }
             }
             Err(e) => (Outcome::Failed(e.to_string()), None),
@@ -261,7 +278,13 @@ mod tests {
         (d, ctx)
     }
 
-    fn approve(path: &Path, risk: Risk, rule: Option<&'static str>, command: Option<ToolCommand>, ctx: &Context) -> ApprovedTarget {
+    fn approve(
+        path: &Path,
+        risk: Risk,
+        rule: Option<&'static str>,
+        command: Option<ToolCommand>,
+        ctx: &Context,
+    ) -> ApprovedTarget {
         let m = fs::symlink_metadata(path).unwrap();
         let c = Candidate {
             path: path.to_path_buf(),
@@ -303,7 +326,10 @@ mod tests {
         assert_eq!(rec["result"], "ok");
         assert_eq!(rec["rule"], "node-modules");
         assert_eq!(rec["dry_run"], false);
-        assert!(lines.next().is_none(), "expected exactly one pending line and one outcome line");
+        assert!(
+            lines.next().is_none(),
+            "expected exactly one pending line and one outcome line"
+        );
     }
 
     #[test]
@@ -385,7 +411,10 @@ mod tests {
         let (d, ctx) = setup();
         let dir = ctx.home.join("Projects/tool");
         fs::create_dir_all(&dir).unwrap();
-        let cmd = ToolCommand { program: "echo", args: &["hello"] };
+        let cmd = ToolCommand {
+            program: "echo",
+            args: &["hello"],
+        };
         let t = approve(&dir, Risk::ToolManaged, Some("t"), Some(cmd), &ctx);
         let res = execute(&[t], false, Some(&mut log_in(&d)), &FakeTrash::default());
         assert_eq!(res[0].outcome, Outcome::Done);
@@ -398,7 +427,10 @@ mod tests {
         let (_d, ctx) = setup();
         let dir = ctx.home.join("Projects/tool");
         fs::create_dir_all(&dir).unwrap();
-        let cmd = ToolCommand { program: "echo", args: &["hello"] };
+        let cmd = ToolCommand {
+            program: "echo",
+            args: &["hello"],
+        };
         let t = approve(&dir, Risk::ToolManaged, Some("t"), Some(cmd), &ctx);
         let res = execute(&[t], true, None, &FakeTrash::default());
         assert_eq!(res[0].outcome, Outcome::DryRun);
@@ -431,8 +463,14 @@ mod tests {
         let res = execute(&[t1, t2], false, Some(&mut log), &trash);
         assert_eq!(res[0].outcome, Outcome::Failed(LOG_FAIL_MSG.into()));
         assert_eq!(res[1].outcome, Outcome::Failed(LOG_FAIL_MSG.into()));
-        assert!(f1.exists(), "first target must not be touched: pending record failed to write");
-        assert!(f2.exists(), "second target must not be touched: run halted after first failure");
+        assert!(
+            f1.exists(),
+            "first target must not be touched: pending record failed to write"
+        );
+        assert!(
+            f2.exists(),
+            "second target must not be touched: run halted after first failure"
+        );
         assert!(trash.0.borrow().is_empty());
     }
 
@@ -453,6 +491,9 @@ mod tests {
         let t = approve(&f, Risk::UserData, None, None, &ctx);
         let res = execute(&[t], false, Some(&mut log_in(&d)), &FailingTrash);
         assert!(matches!(res[0].outcome, Outcome::Failed(_)));
-        assert!(f.exists(), "trash failure must not fall back to deleting the file");
+        assert!(
+            f.exists(),
+            "trash failure must not fall back to deleting the file"
+        );
     }
 }

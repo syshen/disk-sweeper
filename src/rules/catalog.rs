@@ -1,5 +1,7 @@
 use super::Category::{AppCache, DevTools, LargeFiles};
-use super::Matcher::{ChildOf, ChildWithSuffix, DirWithSibling, Exact, ExtUnder, LargeFile, OldChild};
+use super::Matcher::{
+    ChildOf, ChildWithSuffix, DirWithSibling, Exact, ExtUnder, LargeFile, OldChild,
+};
 use super::Rule;
 use crate::risk::Risk::{Regenerable, ToolManaged, UserData};
 use crate::risk::ToolCommand;
@@ -15,7 +17,10 @@ pub static CATALOG: &[Rule] = &[
         id: "xcode-derived-data",
         category: DevTools,
         risk: Regenerable,
-        matcher: ChildOf { parents: &["Library/Developer/Xcode/DerivedData"], exclude: NONE },
+        matcher: ChildOf {
+            parents: &["Library/Developer/Xcode/DerivedData"],
+            exclude: NONE,
+        },
         command: None,
         description: "Xcode 的 build 中間產物，下次 build 會自動重建（第一次 build 會較慢）",
     },
@@ -23,7 +28,10 @@ pub static CATALOG: &[Rule] = &[
         id: "xcode-archives",
         category: DevTools,
         risk: UserData,
-        matcher: ChildOf { parents: &["Library/Developer/Xcode/Archives"], exclude: NONE },
+        matcher: ChildOf {
+            parents: &["Library/Developer/Xcode/Archives"],
+            exclude: NONE,
+        },
         command: None,
         description: "Xcode Archive（含已發佈版本的 dSYM）；若需要追查舊版 crash 請保留",
     },
@@ -47,14 +55,20 @@ pub static CATALOG: &[Rule] = &[
         category: DevTools,
         risk: ToolManaged,
         matcher: Exact(&["Library/Developer/CoreSimulator"]),
-        command: Some(ToolCommand { program: "xcrun", args: &["simctl", "delete", "unavailable"] }),
+        command: Some(ToolCommand {
+            program: "xcrun",
+            args: &["simctl", "delete", "unavailable"],
+        }),
         description: "iOS Simulator 的裝置與資料；官方指令只會刪除目前 Xcode 已不支援的 simulator",
     },
     Rule {
         id: "node-modules",
         category: DevTools,
         risk: Regenerable,
-        matcher: DirWithSibling { name: "node_modules", sibling: "package.json" },
+        matcher: DirWithSibling {
+            name: "node_modules",
+            sibling: "package.json",
+        },
         command: None,
         description: "專案的 npm 套件，執行 npm / pnpm / bun install 即可重建",
     },
@@ -62,7 +76,10 @@ pub static CATALOG: &[Rule] = &[
         id: "rust-target",
         category: DevTools,
         risk: Regenerable,
-        matcher: DirWithSibling { name: "target", sibling: "Cargo.toml" },
+        matcher: DirWithSibling {
+            name: "target",
+            sibling: "Cargo.toml",
+        },
         command: None,
         description: "Rust 的 build 產物，cargo build 會重建",
     },
@@ -87,8 +104,12 @@ pub static CATALOG: &[Rule] = &[
         category: DevTools,
         risk: ToolManaged,
         matcher: Exact(&["Library/pnpm/store"]),
-        command: Some(ToolCommand { program: "pnpm", args: &["store", "prune"] }),
-        description: "pnpm 共用套件庫；直接刪除會破壞既有專案的硬連結，請用官方指令清理未使用的套件",
+        command: Some(ToolCommand {
+            program: "pnpm",
+            args: &["store", "prune"],
+        }),
+        description:
+            "pnpm 共用套件庫；直接刪除會破壞既有專案的硬連結，請用官方指令清理未使用的套件",
     },
     Rule {
         id: "yarn-cache",
@@ -126,7 +147,10 @@ pub static CATALOG: &[Rule] = &[
         id: "xdg-cache",
         category: DevTools,
         risk: Regenerable,
-        matcher: ChildOf { parents: &[".cache"], exclude: NONE },
+        matcher: ChildOf {
+            parents: &[".cache"],
+            exclude: NONE,
+        },
         command: None,
         description: "命令列工具的快取目錄（~/.cache），工具會自動重建",
     },
@@ -135,8 +159,12 @@ pub static CATALOG: &[Rule] = &[
         category: DevTools,
         risk: ToolManaged,
         matcher: Exact(&["Library/Containers/com.docker.docker"]),
-        command: Some(ToolCommand { program: "docker", args: &["system", "prune", "-f"] }),
-        description: "Docker Desktop 的 VM 磁碟映像；直接刪檔會失去所有 image 與 volume，請用官方指令清理",
+        command: Some(ToolCommand {
+            program: "docker",
+            args: &["system", "prune", "-f"],
+        }),
+        description:
+            "Docker Desktop 的 VM 磁碟映像；直接刪檔會失去所有 image 與 volume，請用官方指令清理",
     },
     Rule {
         id: "orbstack",
@@ -150,7 +178,10 @@ pub static CATALOG: &[Rule] = &[
         id: "orbstack",
         category: DevTools,
         risk: ToolManaged,
-        matcher: ChildWithSuffix { parent: "Library/Group Containers", suffix: ".dev.orbstack" },
+        matcher: ChildWithSuffix {
+            parent: "Library/Group Containers",
+            suffix: ".dev.orbstack",
+        },
         command: None,
         description: "OrbStack 的資料；請在 OrbStack 內清理 image 與 container",
     },
@@ -160,14 +191,20 @@ pub static CATALOG: &[Rule] = &[
         category: AppCache,
         risk: ToolManaged,
         matcher: Exact(&["Library/Caches/Homebrew"]),
-        command: Some(ToolCommand { program: "brew", args: &["cleanup", "--prune=all"] }),
+        command: Some(ToolCommand {
+            program: "brew",
+            args: &["cleanup", "--prune=all"],
+        }),
         description: "Homebrew 下載的安裝檔快取",
     },
     Rule {
         id: "app-caches",
         category: AppCache,
         risk: Regenerable,
-        matcher: ChildOf { parents: &["Library/Caches"], exclude: NONE },
+        matcher: ChildOf {
+            parents: &["Library/Caches"],
+            exclude: NONE,
+        },
         command: None,
         description: "App 的快取，App 會自動重建；若 App 正在執行，少數情況需要重開",
     },
@@ -175,7 +212,10 @@ pub static CATALOG: &[Rule] = &[
         id: "user-logs",
         category: AppCache,
         risk: Regenerable,
-        matcher: ChildOf { parents: &["Library/Logs"], exclude: &["disk-sweeper"] },
+        matcher: ChildOf {
+            parents: &["Library/Logs"],
+            exclude: &["disk-sweeper"],
+        },
         command: None,
         description: "App 與系統的 log 檔",
     },
@@ -184,7 +224,10 @@ pub static CATALOG: &[Rule] = &[
         id: "installers",
         category: LargeFiles,
         risk: UserData,
-        matcher: ExtUnder { under: "Downloads", exts: &["dmg", "pkg", "iso"] },
+        matcher: ExtUnder {
+            under: "Downloads",
+            exts: &["dmg", "pkg", "iso"],
+        },
         command: None,
         description: "下載的安裝檔，安裝完成後通常不需要保留",
     },
@@ -192,7 +235,11 @@ pub static CATALOG: &[Rule] = &[
         id: "old-downloads",
         category: LargeFiles,
         risk: UserData,
-        matcher: OldChild { parent: "Downloads", min_age_days: 90, min_size: 50 * MB },
+        matcher: OldChild {
+            parent: "Downloads",
+            min_age_days: 90,
+            min_size: 50 * MB,
+        },
         command: None,
         description: "下載資料夾中超過 90 天未修改的大型項目",
     },
@@ -200,7 +247,10 @@ pub static CATALOG: &[Rule] = &[
         id: "ios-backups",
         category: LargeFiles,
         risk: UserData,
-        matcher: ChildOf { parents: &["Library/Application Support/MobileSync/Backup"], exclude: NONE },
+        matcher: ChildOf {
+            parents: &["Library/Application Support/MobileSync/Backup"],
+            exclude: NONE,
+        },
         command: None,
         description: "iPhone / iPad 的本機備份；確認已有 iCloud 或較新的備份再刪除",
     },

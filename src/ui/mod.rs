@@ -18,8 +18,12 @@ use crate::risk::Risk;
 use crate::size::format_size;
 
 pub fn draw(f: &mut Frame, app: &App) {
-    let [header, body, footer] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(2)]).areas(f.area());
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(2),
+    ])
+    .areas(f.area());
     draw_header(f, header, app);
     if app.tree.is_none() {
         overlay::draw_scanning(f, body, app);
@@ -41,33 +45,57 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
-    let root = app.tree.as_ref().map_or_else(|| "…".to_string(), |t| display_path(t.root_path(), &app.ctx.home));
+    let root = app.tree.as_ref().map_or_else(
+        || "…".to_string(),
+        |t| display_path(t.root_path(), &app.ctx.home),
+    );
     let disk = app
         .disk
-        .map(|d| format!(" · 共 {} · 可用 {}", format_size(d.total), format_size(d.free)))
+        .map(|d| {
+            format!(
+                " · 共 {} · 可用 {}",
+                format_size(d.total),
+                format_size(d.free)
+            )
+        })
         .unwrap_or_default();
     let tab = |m: Mode, label: &'static str| {
         if app.mode == m {
-            Span::styled(format!("[{label}]"), Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+            Span::styled(
+                format!("[{label}]"),
+                Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            )
         } else {
             Span::raw(format!(" {label} "))
         }
     };
     let mut spans = vec![
-        Span::styled(" disk-sweeper ", Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " disk-sweeper ",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
         Span::raw(format!("{root}{disk}  ")),
         tab(Mode::Explore, "Explore"),
         Span::raw(" "),
         tab(Mode::Suggest, "Suggest"),
     ];
     if app.dry_run {
-        spans.push(Span::styled("  模擬模式", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(
+            "  模擬模式",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
-    let mut info = vec![Span::raw(format!(" 已標記 {} 項 · {}", app.marks.len(), format_size(app.marked_total())))];
+    let mut info = vec![Span::raw(format!(
+        " 已標記 {} 項 · {}",
+        app.marks.len(),
+        format_size(app.marked_total())
+    ))];
     if !app.errors.is_empty() {
         info.push(Span::styled(
             format!("   ⚠ {} 個路徑無法讀取 (u)", app.errors.len()),
@@ -75,16 +103,29 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         ));
     }
     if app.needs_fda {
-        info.push(Span::styled("   需要「完全取用磁碟」權限 (u)", Style::default().fg(Color::Yellow)));
+        info.push(Span::styled(
+            "   需要「完全取用磁碟」權限 (u)",
+            Style::default().fg(Color::Yellow),
+        ));
     }
     if let Some(s) = &app.status {
-        info.push(Span::styled(format!("   {s}"), Style::default().fg(Color::Cyan)));
+        info.push(Span::styled(
+            format!("   {s}"),
+            Style::default().fg(Color::Cyan),
+        ));
     }
     let keys = match app.mode {
-        Mode::Explore => " ↑↓/jk 移動  →/l 進入  ←/h 返回  space 標記  tab 切換  d 清理  ? 說明  q 離開",
-        Mode::Suggest => " ↑↓/jk 移動  ⏎ 展開  space 標記  a 小項目  tab 切換  d 清理  ? 說明  q 離開",
+        Mode::Explore => {
+            " ↑↓/jk 移動  →/l 進入  ←/h 返回  space 標記  tab 切換  d 清理  ? 說明  q 離開"
+        }
+        Mode::Suggest => {
+            " ↑↓/jk 移動  ⏎ 展開  space 標記  a 小項目  tab 切換  d 清理  ? 說明  q 離開"
+        }
     };
-    let lines = vec![Line::from(info), Line::from(Span::styled(keys, Style::default().fg(Color::DarkGray)))];
+    let lines = vec![
+        Line::from(info),
+        Line::from(Span::styled(keys, Style::default().fg(Color::DarkGray))),
+    ];
     f.render_widget(Paragraph::new(lines), area);
 }
 
@@ -98,7 +139,11 @@ pub(crate) fn risk_style(r: Risk) -> Style {
 }
 
 pub(crate) fn bar(size: u64, total: u64, width: usize) -> String {
-    let filled = if total == 0 { 0 } else { ((size as f64 / total as f64) * width as f64).round() as usize };
+    let filled = if total == 0 {
+        0
+    } else {
+        ((size as f64 / total as f64) * width as f64).round() as usize
+    };
     let filled = filled.min(width);
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
@@ -168,8 +213,19 @@ mod tests {
     use std::time::Duration;
 
     fn base_app() -> App {
-        let ctx = Context { home: PathBuf::from("/h"), path_var: OsString::new() };
-        App::new(ctx, false, Some(DiskInfo { total: 228 << 30, free: 10 << 30 }), 1_800_000_000)
+        let ctx = Context {
+            home: PathBuf::from("/h"),
+            path_var: OsString::new(),
+        };
+        App::new(
+            ctx,
+            false,
+            Some(DiskInfo {
+                total: 228 << 30,
+                free: 10 << 30,
+            }),
+            1_800_000_000,
+        )
     }
 
     fn sample_app() -> App {
@@ -184,7 +240,11 @@ mod tests {
                 ("Movies/raw.mov", 2 << 30),
             ],
         );
-        app.on_scan_event(ScanEvent::Done(ScanResult { tree, errors: vec![], elapsed: Duration::ZERO }));
+        app.on_scan_event(ScanEvent::Done(ScanResult {
+            tree,
+            errors: vec![],
+            elapsed: Duration::ZERO,
+        }));
         app
     }
 
@@ -247,7 +307,13 @@ mod tests {
         let mut app = sample_app();
         let lib = find(app.tree.as_ref().unwrap(), "Library");
         app.confirm = Some(ConfirmState {
-            items: vec![(lib, Verdict::Rejected { path: "/h/Library".into(), reason: "系統或使用者的根目錄本身不可刪除".into() })],
+            items: vec![(
+                lib,
+                Verdict::Rejected {
+                    path: "/h/Library".into(),
+                    reason: "系統或使用者的根目錄本身不可刪除".into(),
+                },
+            )],
             warnings: vec!["Xcode 正在執行，建議先關閉再清理".into()],
             need_typed: true,
             input: "ye".into(),
@@ -282,11 +348,34 @@ mod tests {
 
     #[test]
     fn dry_run_confirm_screen_uses_localized_label_not_english() {
-        let ctx = Context { home: PathBuf::from("/h"), path_var: OsString::new() };
-        let mut app = App::new(ctx, true, Some(DiskInfo { total: 228 << 30, free: 10 << 30 }), 1_800_000_000);
-        let tree = tree_from("/h", &[("Projects/web/node_modules/react/index.js", 800 << 20)]);
-        app.on_scan_event(ScanEvent::Done(ScanResult { tree, errors: vec![], elapsed: Duration::ZERO }));
-        app.confirm = Some(ConfirmState { items: vec![], warnings: vec![], need_typed: false, input: String::new() });
+        let ctx = Context {
+            home: PathBuf::from("/h"),
+            path_var: OsString::new(),
+        };
+        let mut app = App::new(
+            ctx,
+            true,
+            Some(DiskInfo {
+                total: 228 << 30,
+                free: 10 << 30,
+            }),
+            1_800_000_000,
+        );
+        let tree = tree_from(
+            "/h",
+            &[("Projects/web/node_modules/react/index.js", 800 << 20)],
+        );
+        app.on_scan_event(ScanEvent::Done(ScanResult {
+            tree,
+            errors: vec![],
+            elapsed: Duration::ZERO,
+        }));
+        app.confirm = Some(ConfirmState {
+            items: vec![],
+            warnings: vec![],
+            need_typed: false,
+            input: String::new(),
+        });
         app.screen = Screen::Confirm;
         let terminal = render(&app);
         let rendered = format!("{}", terminal.backend());

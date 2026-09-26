@@ -27,7 +27,10 @@ pub struct ToolCommand {
 
 impl ToolCommand {
     pub fn display(&self) -> String {
-        std::iter::once(self.program).chain(self.args.iter().copied()).collect::<Vec<_>>().join(" ")
+        std::iter::once(self.program)
+            .chain(self.args.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -54,7 +57,10 @@ mod tests {
 
     #[test]
     fn command_display_joins_args() {
-        let cmd = ToolCommand { program: "brew", args: &["cleanup", "--prune=all"] };
+        let cmd = ToolCommand {
+            program: "brew",
+            args: &["cleanup", "--prune=all"],
+        };
         assert_eq!(cmd.display(), "brew cleanup --prune=all");
     }
 }

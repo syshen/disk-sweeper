@@ -11,7 +11,9 @@ const APPS: &[(&str, &str, &str)] = &[
 ];
 
 /// 回傳 (顯示名稱, 程序名稱)，依顯示名稱去重。
-pub fn apps_for_rules<'a>(rule_ids: impl IntoIterator<Item = &'a str>) -> Vec<(&'static str, &'static str)> {
+pub fn apps_for_rules<'a>(
+    rule_ids: impl IntoIterator<Item = &'a str>,
+) -> Vec<(&'static str, &'static str)> {
     let mut out: Vec<(&'static str, &'static str)> = Vec::new();
     for id in rule_ids {
         for &(rule, name, process) in APPS {
@@ -47,8 +49,16 @@ mod tests {
 
     #[test]
     fn maps_rules_to_apps_without_duplicates() {
-        let apps = apps_for_rules(["xcode-derived-data", "xcode-archives", "docker", "npm-cache"]);
-        assert_eq!(apps, vec![("Xcode", "Xcode"), ("Docker Desktop", "com.docker.backend")]);
+        let apps = apps_for_rules([
+            "xcode-derived-data",
+            "xcode-archives",
+            "docker",
+            "npm-cache",
+        ]);
+        assert_eq!(
+            apps,
+            vec![("Xcode", "Xcode"), ("Docker Desktop", "com.docker.backend")]
+        );
     }
 
     #[test]

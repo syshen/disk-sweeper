@@ -18,7 +18,10 @@ pub fn disk_info(path: &Path) -> io::Result<DiskInfo> {
         return Err(io::Error::last_os_error());
     }
     let bsize = s.f_bsize as u64;
-    Ok(DiskInfo { total: s.f_blocks as u64 * bsize, free: s.f_bavail as u64 * bsize })
+    Ok(DiskInfo {
+        total: s.f_blocks as u64 * bsize,
+        free: s.f_bavail as u64 * bsize,
+    })
 }
 
 #[cfg(test)]

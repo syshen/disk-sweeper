@@ -57,7 +57,10 @@ fn special_component(rel: &str) -> Option<&'static str> {
             return Some(REASON_GIT);
         }
         let n = PHOTOS_SUFFIX.len();
-        if c.len() >= n && c.is_char_boundary(c.len() - n) && c[c.len() - n..].eq_ignore_ascii_case(PHOTOS_SUFFIX) {
+        if c.len() >= n
+            && c.is_char_boundary(c.len() - n)
+            && c[c.len() - n..].eq_ignore_ascii_case(PHOTOS_SUFFIX)
+        {
             return Some(REASON_PHOTOS);
         }
     }
@@ -108,7 +111,9 @@ mod tests {
 
     #[test]
     fn protected_tree_check_for_rules() {
-        assert!(is_protected_tree_rel("Library/Mobile Documents/com~apple~CloudDocs"));
+        assert!(is_protected_tree_rel(
+            "Library/Mobile Documents/com~apple~CloudDocs"
+        ));
         assert!(is_protected_tree_rel("Library/Logs/disk-sweeper"));
         assert!(!is_protected_tree_rel("Library"));
         assert!(!is_protected_tree_rel(""));

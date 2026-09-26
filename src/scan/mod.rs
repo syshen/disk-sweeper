@@ -49,7 +49,11 @@ impl ScanError {
         let path = e.path().map(Path::to_path_buf).unwrap_or_default();
         match e.io_error() {
             Some(io_err) => Self::from_io(&path, io_err),
-            None => Self { path, message: e.to_string(), permission_denied: false },
+            None => Self {
+                path,
+                message: e.to_string(),
+                permission_denied: false,
+            },
         }
     }
 }
@@ -97,7 +101,12 @@ fn entry_meta(m: &std::fs::Metadata) -> EntryMeta {
     };
     EntryMeta {
         kind,
-        meta: NodeMeta { size: m.blocks() * 512, inode: m.ino(), dev: m.dev(), mtime: m.mtime() },
+        meta: NodeMeta {
+            size: m.blocks() * 512,
+            inode: m.ino(),
+            dev: m.dev(),
+            mtime: m.mtime(),
+        },
         nlink: m.nlink(),
     }
 }
@@ -158,11 +167,17 @@ pub fn scan(root: &Path, opts: &ScanOptions, tx: &Sender<ScanEvent>) -> ScanResu
             progress.errors += 1;
         }
         let Some(em) = entry.client_state else {
-            errors.push(ScanError { path, message: "無法讀取 metadata".into(), permission_denied: false });
+            errors.push(ScanError {
+                path,
+                message: "無法讀取 metadata".into(),
+                permission_denied: false,
+            });
             progress.errors += 1;
             continue;
         };
-        let Some(&parent) = dirs.get(&*entry.parent_path) else { continue };
+        let Some(&parent) = dirs.get(&*entry.parent_path) else {
+            continue;
+        };
 
         let mut meta = em.meta;
         if em.kind == NodeKind::File && em.nlink > 1 && !hard_links.insert((meta.dev, meta.inode)) {
@@ -180,7 +195,11 @@ pub fn scan(root: &Path, opts: &ScanOptions, tx: &Sender<ScanEvent>) -> ScanResu
 
         progress.files += 1;
         progress.bytes += meta.size;
-        if let Some(first) = path.strip_prefix(root).ok().and_then(|r| r.components().next()) {
+        if let Some(first) = path
+            .strip_prefix(root)
+            .ok()
+            .and_then(|r| r.components().next())
+        {
             let key = first.as_os_str().to_string_lossy();
             match top.get_mut(key.as_ref()) {
                 Some(v) => *v += meta.size,
@@ -198,7 +217,11 @@ pub fn scan(root: &Path, opts: &ScanOptions, tx: &Sender<ScanEvent>) -> ScanResu
     }
 
     tree.finalize();
-    ScanResult { tree, errors, elapsed: start.elapsed() }
+    ScanResult {
+        tree,
+        errors,
+        elapsed: start.elapsed(),
+    }
 }
 
 fn top_n(top: &HashMap<String, u64>, n: usize) -> Vec<(String, u64)> {
@@ -211,7 +234,9 @@ fn top_n(top: &HashMap<String, u64>, n: usize) -> Vec<(String, u64)> {
 /// 是否有 TCC 保護路徑因權限不足而讀取失敗（需提示使用者授權「完全取用磁碟」）。
 pub fn needs_full_disk_access(errors: &[ScanError], home: &Path) -> bool {
     errors.iter().filter(|e| e.permission_denied).any(|e| {
-        e.path.strip_prefix(home).is_ok_and(|rel| TCC_PATHS.iter().any(|t| rel.starts_with(t)))
+        e.path
+            .strip_prefix(home)
+            .is_ok_and(|rel| TCC_PATHS.iter().any(|t| rel.starts_with(t)))
     })
 }
 
@@ -240,7 +265,14 @@ mod tests {
 
     fn run(root: &Path, min_node_size: u64) -> ScanResult {
         let (tx, _rx) = mpsc::channel();
-        scan(root, &ScanOptions { threads: 4, min_node_size }, &tx)
+        scan(
+            root,
+            &ScanOptions {
+                threads: 4,
+                min_node_size,
+            },
+            &tx,
+        )
     }
 
     #[test]
@@ -252,7 +284,13 @@ mod tests {
         let res = run(&r, 0);
         let expected: u64 = ["", "a", "a/b", "a/x", "a/b/y", "z"]
             .iter()
-            .map(|rel| blocks(&if rel.is_empty() { r.clone() } else { r.join(rel) }))
+            .map(|rel| {
+                blocks(&if rel.is_empty() {
+                    r.clone()
+                } else {
+                    r.join(rel)
+                })
+            })
             .sum();
         let t = &res.tree;
         assert_eq!(t.node(t.root()).size, expected);
@@ -282,7 +320,9 @@ mod tests {
         let res = run(&r, 0);
         fs::set_permissions(r.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
         assert!(
-            res.errors.iter().any(|e| e.permission_denied && e.path.starts_with(r.join("locked"))),
+            res.errors
+                .iter()
+                .any(|e| e.permission_denied && e.path.starts_with(r.join("locked"))),
             "{:?}",
             res.errors
         );
@@ -329,7 +369,11 @@ mod tests {
     #[test]
     fn detects_tcc_protected_failures() {
         let home = Path::new("/h");
-        let err = |p: &str| ScanError { path: p.into(), message: "x".into(), permission_denied: true };
+        let err = |p: &str| ScanError {
+            path: p.into(),
+            message: "x".into(),
+            permission_denied: true,
+        };
         assert!(needs_full_disk_access(&[err("/h/Library/Mail/V10")], home));
         assert!(!needs_full_disk_access(&[err("/h/Projects/x")], home));
     }

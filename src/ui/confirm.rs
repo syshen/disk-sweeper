@@ -27,8 +27,15 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
                     h => h.label().to_string(),
                 };
                 item_lines.push(Line::from(vec![
-                    Span::styled(format!(" ✓ {} ", pad(&what, 12)), Style::default().fg(Color::Green)),
-                    Span::raw(format!("{:>7}  {}", format_size(t.size()), display_path(t.path(), &app.ctx.home))),
+                    Span::styled(
+                        format!(" ✓ {} ", pad(&what, 12)),
+                        Style::default().fg(Color::Green),
+                    ),
+                    Span::raw(format!(
+                        "{:>7}  {}",
+                        format_size(t.size()),
+                        display_path(t.path(), &app.ctx.home)
+                    )),
                 ]));
             }
             Verdict::Rejected { path, reason } => item_lines.push(Line::from(Span::styled(
@@ -49,19 +56,31 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         Style::default().add_modifier(Modifier::BOLD),
     )));
     for w in &state.warnings {
-        lines.push(Line::from(Span::styled(format!(" ⚠ {w}"), Style::default().fg(Color::Yellow))));
+        lines.push(Line::from(Span::styled(
+            format!(" ⚠ {w}"),
+            Style::default().fg(Color::Yellow),
+        )));
     }
     let prompt = if state.need_typed {
         format!(" 輸入 yes 並按 Enter 執行（Esc 取消）：{}_", state.input)
     } else {
         " 按 y 執行，n 或 Esc 取消".to_string()
     };
-    lines.push(Line::from(Span::styled(prompt, Style::default().add_modifier(Modifier::BOLD))));
+    lines.push(Line::from(Span::styled(
+        prompt,
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
 
-    let title = if app.dry_run { " 確認清理（模擬模式，不會變更檔案） " } else { " 確認清理 " };
+    let title = if app.dry_run {
+        " 確認清理（模擬模式，不會變更檔案） "
+    } else {
+        " 確認清理 "
+    };
     f.render_widget(Clear, rect);
     f.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }).block(Block::default().borders(Borders::ALL).title(title)),
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(title)),
         rect,
     );
 }

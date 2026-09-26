@@ -16,14 +16,21 @@ pub struct ActionLog {
 impl ActionLog {
     pub fn open(dir: &Path) -> io::Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let file = OpenOptions::new().create(true).append(true).open(dir.join("actions.jsonl"))?;
-        Ok(Self { writer: Box::new(file) })
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("actions.jsonl"))?;
+        Ok(Self {
+            writer: Box::new(file),
+        })
     }
 
     /// 測試專用：包一個任意 writer（例如永遠失敗的假 writer）。
     #[cfg(test)]
     pub(crate) fn from_writer(w: impl Write + Send + 'static) -> Self {
-        Self { writer: Box::new(w) }
+        Self {
+            writer: Box::new(w),
+        }
     }
 
     pub fn write(&mut self, rec: &ActionRecord) -> io::Result<()> {
