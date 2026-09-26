@@ -163,8 +163,7 @@ pub static CATALOG: &[Rule] = &[
             program: "docker",
             args: &["system", "prune", "-f"],
         }),
-        description:
-            "Docker Desktop 的 VM 磁碟映像；直接刪檔會失去所有 image 與 volume，請用官方指令清理",
+        description: "Docker Desktop 的 VM 磁碟映像（直接刪檔會失去所有 image 與 volume）；官方指令會刪除所有已停止的 container、未使用的 network、dangling image 與 build cache（需先開啟 Docker Desktop）",
     },
     Rule {
         id: "orbstack",
@@ -195,7 +194,7 @@ pub static CATALOG: &[Rule] = &[
             program: "brew",
             args: &["cleanup", "--prune=all"],
         }),
-        description: "Homebrew 下載的安裝檔快取",
+        description: "Homebrew 的下載快取；官方指令也會移除已安裝 formula 的舊版本，不只是下載檔",
     },
     Rule {
         id: "app-caches",

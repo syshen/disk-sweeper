@@ -1,24 +1,57 @@
 use std::process::{Command, Stdio};
 
-/// (規則 id, 顯示名稱, 程序名稱)
-const APPS: &[(&str, &str, &str)] = &[
-    ("xcode-derived-data", "Xcode", "Xcode"),
-    ("xcode-archives", "Xcode", "Xcode"),
-    ("xcode-device-support", "Xcode", "Xcode"),
-    ("simulator", "Simulator", "Simulator"),
-    ("docker", "Docker Desktop", "com.docker.backend"),
-    ("orbstack", "OrbStack", "OrbStack"),
+/// 清理時這個 App 應處於的狀態
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Expect {
+    /// 直接刪檔的規則：App 執行中會一邊寫入，建議先關閉
+    Quit,
+    /// 用官方指令清理的規則：App 必須正在執行，指令才會成功
+    Running { command: &'static str },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolApp {
+    pub name: &'static str,
+    pub process: &'static str,
+    pub expect: Expect,
+}
+
+/// (規則 id, App)。OrbStack 規則沒有可自動執行的指令、不會被核准，所以不在此列。
+const APPS: &[(&str, ToolApp)] = &[
+    ("xcode-derived-data", XCODE),
+    ("xcode-archives", XCODE),
+    ("xcode-device-support", XCODE),
+    (
+        "simulator",
+        ToolApp {
+            name: "Simulator",
+            process: "Simulator",
+            expect: Expect::Quit,
+        },
+    ),
+    (
+        "docker",
+        ToolApp {
+            name: "Docker Desktop",
+            process: "com.docker.backend",
+            expect: Expect::Running { command: "docker" },
+        },
+    ),
 ];
 
-/// 回傳 (顯示名稱, 程序名稱)，依顯示名稱去重。
-pub fn apps_for_rules<'a>(
-    rule_ids: impl IntoIterator<Item = &'a str>,
-) -> Vec<(&'static str, &'static str)> {
-    let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+const XCODE: ToolApp = ToolApp {
+    name: "Xcode",
+    process: "Xcode",
+    expect: Expect::Quit,
+};
+
+/// 依顯示名稱去重。
+pub fn apps_for_rules<'a>(rule_ids: impl IntoIterator<Item = &'a str>) -> Vec<ToolApp> {
+    let mut out: Vec<ToolApp> = Vec::new();
     for id in rule_ids {
-        for &(rule, name, process) in APPS {
-            if rule == id && !out.iter().any(|(n, _)| *n == name) {
-                out.push((name, process));
+        for &(rule, app) in APPS {
+            if rule == id && !out.iter().any(|a| a.name == app.name) {
+                out.push(app);
             }
         }
     }
@@ -36,10 +69,22 @@ pub fn is_running(process: &str) -> bool {
 }
 
 pub fn running_app_warnings<'a>(rule_ids: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    warnings_with(rule_ids, is_running)
+}
+
+fn warnings_with<'a>(
+    rule_ids: impl IntoIterator<Item = &'a str>,
+    running: impl Fn(&str) -> bool,
+) -> Vec<String> {
     apps_for_rules(rule_ids)
         .into_iter()
-        .filter(|(_, process)| is_running(process))
-        .map(|(name, _)| format!("{name} 正在執行，建議先關閉再清理"))
+        .filter_map(|app| match (app.expect, running(app.process)) {
+            (Expect::Quit, true) => Some(format!("{} 正在執行，建議先關閉再清理", app.name)),
+            (Expect::Running { command }, false) => {
+                Some(format!("{} 未執行，{command} 指令會失敗", app.name))
+            }
+            _ => None,
+        })
         .collect()
 }
 
@@ -55,10 +100,30 @@ mod tests {
             "docker",
             "npm-cache",
         ]);
+        let names: Vec<&str> = apps.iter().map(|a| a.name).collect();
+        assert_eq!(names, vec!["Xcode", "Docker Desktop"]);
+    }
+
+    #[test]
+    fn xcode_warns_only_while_running() {
+        let ids = ["xcode-derived-data", "simulator"];
         assert_eq!(
-            apps,
-            vec![("Xcode", "Xcode"), ("Docker Desktop", "com.docker.backend")]
+            warnings_with(ids, |_| true),
+            vec![
+                "Xcode 正在執行，建議先關閉再清理",
+                "Simulator 正在執行，建議先關閉再清理"
+            ]
         );
+        assert!(warnings_with(ids, |_| false).is_empty());
+    }
+
+    #[test]
+    fn docker_warns_only_when_not_running() {
+        assert_eq!(
+            warnings_with(["docker"], |_| false),
+            vec!["Docker Desktop 未執行，docker 指令會失敗"]
+        );
+        assert!(warnings_with(["docker"], |_| true).is_empty());
     }
 
     #[test]
