@@ -4,15 +4,30 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use super::{display_path, pad, popup, risk_style};
+use super::{display_path, pad, popup, risk_style, wrap_to_width};
 use crate::app::{App, ConfirmItem};
 use crate::risk::Handling;
 use crate::rules::CATALOG;
 use crate::safety::Verdict;
 use crate::size::format_size;
 
-/// 一個項目在清單中佔的行（第一行是項目本身，第二行是規則說明）
-fn item_lines(item: &ConfirmItem, app: &App) -> Vec<Line<'static>> {
+/// 路徑、說明與拒絕原因的縮排
+const INDENT: &str = "     ";
+
+/// 依寬度折行並加上縮排；每一行都完整顯示，不會被右邊界切掉
+fn wrapped(text: &str, width: usize, style: Style) -> Vec<Line<'static>> {
+    let avail = width.saturating_sub(INDENT.len());
+    wrap_to_width(text, avail)
+        .into_iter()
+        .map(|seg| Line::from(Span::styled(format!("{INDENT}{seg}"), style)))
+        .collect()
+}
+
+/// 一個項目在清單中佔的行：第一行是風險／處理方式／大小，接著是完整路徑，最後是規則說明
+fn item_lines(item: &ConfirmItem, app: &App, width: usize) -> Vec<Line<'static>> {
+    let dim = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
     match &item.verdict {
         Verdict::Approved(t) => {
             let what = match t.handling() {
@@ -22,31 +37,35 @@ fn item_lines(item: &ConfirmItem, app: &App) -> Vec<Line<'static>> {
             let mut lines = vec![Line::from(vec![
                 Span::styled(" ✓ ", Style::default().fg(Color::Green)),
                 Span::styled(pad(item.risk.label(), 10), risk_style(item.risk)),
-                Span::raw(format!(
-                    " {} {:>7}  {}",
-                    pad(&what, 12),
-                    format_size(t.size()),
-                    display_path(t.path(), &app.ctx.home)
-                )),
+                Span::raw(format!(" {} {:>7}", pad(&what, 12), format_size(t.size()))),
             ])];
+            lines.extend(wrapped(
+                &display_path(t.path(), &app.ctx.home),
+                width,
+                Style::default(),
+            ));
             let desc = t
                 .rule_id()
                 .and_then(|id| CATALOG.iter().find(|r| r.id == id))
                 .map(|r| r.description);
             if let Some(desc) = desc {
-                lines.push(Line::from(Span::styled(
-                    format!("     {desc}"),
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::DIM),
-                )));
+                lines.extend(wrapped(desc, width, dim));
             }
             lines
         }
-        Verdict::Rejected { path, reason } => vec![Line::from(Span::styled(
-            format!(" ✗ 略過 {}：{reason}", display_path(path, &app.ctx.home)),
-            Style::default().fg(Color::Red),
-        ))],
+        Verdict::Rejected { path, reason } => {
+            let red = Style::default().fg(Color::Red);
+            let mut lines = Vec::new();
+            for (i, seg) in wrap_to_width(&format!("略過：{reason}"), width.saturating_sub(3))
+                .into_iter()
+                .enumerate()
+            {
+                let lead = if i == 0 { " ✗ " } else { "   " };
+                lines.push(Line::from(Span::styled(format!("{lead}{seg}"), red)));
+            }
+            lines.extend(wrapped(&display_path(path, &app.ctx.home), width, red));
+            lines
+        }
     }
 }
 
@@ -80,8 +99,13 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = Vec::new();
     let mut end = start;
     for item in &state.items[start.min(n)..] {
-        let il = item_lines(item, app);
+        let il = item_lines(item, app, inner.width as usize);
         if lines.len() + il.len() > list_h as usize {
+            // 第一個項目就比清單區還高時，仍畫出放得下的部分，避免畫面空白
+            if end == start {
+                lines.extend(il.into_iter().take(list_h as usize));
+                end += 1;
+            }
             break;
         }
         lines.extend(il);
@@ -95,7 +119,12 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         },
     );
 
-    let indicator = if n > 0 && (start > 0 || end < n) {
+    let indicator = if n > 0 && list_h == 0 {
+        Line::from(Span::styled(
+            " 視窗太小，無法顯示項目（請放大終端機）",
+            Style::default().fg(Color::Yellow),
+        ))
+    } else if n > 0 && (start > 0 || end < n) {
         Line::from(Span::styled(
             format!(
                 " 第 {}–{} 項，共 {n} 項（↑↓ 捲動）",

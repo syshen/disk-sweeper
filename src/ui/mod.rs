@@ -170,6 +170,26 @@ pub(crate) fn pad(s: &str, width: usize) -> String {
     out
 }
 
+/// 依終端機顯示寬度折行（CJK 字元算兩欄），每段寬度都不超過 width。
+/// 比 width 還寬的單一字元自成一段。
+pub(crate) fn wrap_to_width(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if used + cw > width && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+            used = 0;
+        }
+        cur.push(c);
+        used += cw;
+    }
+    out.push(cur);
+    out
+}
+
 pub(crate) fn display_path(path: &Path, home: &Path) -> String {
     match path.strip_prefix(home) {
         Ok(rel) if rel.as_os_str().is_empty() => "~".into(),
@@ -403,10 +423,93 @@ mod tests {
         let text = format!("{}", render(&app).backend());
         assert!(text.contains("第 23–23 項，共 23 項"), "{text}");
         assert!(
-            text.contains("~/Library：系統或使用者的根目錄本身不可刪除"),
+            text.contains("✗ 略過：系統或使用者的根目錄本身不可刪除"),
             "{text}"
         );
+        assert!(text.contains("~/Library"), "{text}");
         assert!(text.contains("輸入 yes 並按 Enter 執行"), "{text}");
+    }
+
+    #[test]
+    fn wrap_to_width_splits_by_display_width() {
+        assert_eq!(wrap_to_width("abc", 3), ["abc"]);
+        assert_eq!(wrap_to_width("abcdef", 3), ["abc", "def"]);
+        assert_eq!(wrap_to_width("abcdefg", 3), ["abc", "def", "g"]);
+        assert_eq!(wrap_to_width("中文字", 4), ["中文", "字"]);
+        assert_eq!(wrap_to_width("a中文", 3), ["a中", "文"]);
+        assert_eq!(wrap_to_width("", 5), [""]);
+        // 比寬度還寬的單一字元自成一行，不會無限迴圈
+        assert_eq!(wrap_to_width("中", 1), ["中"]);
+    }
+
+    #[test]
+    fn confirm_screen_shows_full_long_path_on_narrow_terminal() {
+        let home = tempfile::tempdir().unwrap();
+        let ctx = Context::new(home.path(), OsString::new()).unwrap();
+        let mut app = App::new(ctx, false, None, 1_800_000_000);
+        let tree = tree_from("/h", &[("x", 1)]);
+        let node = tree.root();
+        app.on_scan_event(ScanEvent::Done(ScanResult {
+            tree,
+            errors: vec![],
+            elapsed: Duration::ZERO,
+        }));
+        let rel = "Projects/personal/some-long-client-name/frontend/node_modules";
+        let p = app.ctx.home.join(rel);
+        std::fs::create_dir_all(&p).unwrap();
+        let verdict = safety::review(
+            Candidate {
+                path: p,
+                risk: Risk::Regenerable,
+                rule_id: Some("docker"),
+                command: None,
+                size: 800 << 20,
+                inode: 0,
+                mtime: 0,
+            },
+            &app.ctx,
+        );
+        assert!(matches!(verdict, Verdict::Approved(_)), "{verdict:?}");
+        app.confirm = Some(ConfirmState {
+            items: vec![ConfirmItem {
+                node,
+                risk: Risk::Regenerable,
+                verdict,
+            }],
+            warnings: vec![],
+            need_typed: false,
+            input: String::new(),
+            scroll: 0,
+        });
+        app.screen = Screen::Confirm;
+        let mut t = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| draw(f, &app)).unwrap();
+        let text = format!("{}", t.backend());
+        // 路徑可能被折成多行，但結尾一定要看得到；最長的規則說明也不能被切掉
+        assert!(text.contains("frontend/node_modules"), "{text}");
+        assert!(text.contains("build cache"), "{text}");
+        insta::assert_snapshot!(t.backend());
+    }
+
+    #[test]
+    fn tiny_terminal_never_shows_indicator_without_an_item() {
+        let home = tempfile::tempdir().unwrap();
+        let app = confirm_app_with_many_items(home.path(), 1);
+        // 清單區小到放不下一個完整項目時，仍要畫出該項目的前幾行
+        for h in 10..=24 {
+            let mut t = Terminal::new(TestBackend::new(110, h)).unwrap();
+            t.draw(|f| draw(f, &app)).unwrap();
+            let text = format!("{}", t.backend());
+            if text.contains("第 2–") {
+                assert!(text.contains("✓ 可重建"), "height {h}:\n{text}");
+            }
+        }
+        // 清單區完全沒有空間時改顯示提示，而不是誤導的「第 a–b 項」
+        let mut t = Terminal::new(TestBackend::new(110, 12)).unwrap();
+        t.draw(|f| draw(f, &app)).unwrap();
+        let text = format!("{}", t.backend());
+        assert!(text.contains("視窗太小"), "{text}");
+        assert!(!text.contains("第 2–"), "{text}");
     }
 
     #[test]
