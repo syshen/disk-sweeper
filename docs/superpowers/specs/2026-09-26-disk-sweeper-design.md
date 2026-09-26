@@ -48,7 +48,7 @@
   - `ratatui` + `crossterm`：TUI
   - `jwalk`：平行目錄走訪（rayon）
   - `clap`：CLI 參數
-  - `trash`：移到 macOS 垃圾桶（NSFileManager，支援 Finder「放回原處」）
+  - `trash`：移到 macOS 垃圾桶（預設走 Finder，支援「放回原處」；第一次使用時 macOS 會詢問是否允許終端機控制 Finder）
   - `serde` + `serde_json`：操作紀錄
   - `anyhow` / `thiserror`：錯誤處理
   - 測試：`tempfile`、`proptest`、`insta`（TUI snapshot）
@@ -95,9 +95,9 @@ src/
 
 - 只允許 `$HOME` 之下的路徑，且不可等於 `$HOME`
 - 下列路徑**本身**禁止刪除（其內容物可依規則處理）：
-  `~/Library`、`~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/Music`、`~/Movies`、`~/Applications`、`~/Library/Caches`、`~/Library/Application Support`、`~/Library/Containers`、`~/Library/Developer`
+  `~/Library`、`~/Documents`、`~/Desktop`、`~/Downloads`、`~/Pictures`、`~/Music`、`~/Movies`、`~/Applications`、`~/Library/Caches`、`~/Library/Application Support`、`~/Library/Containers`、`~/Library/Group Containers`、`~/Library/Developer`、`~/Library/Logs`
 - 下列路徑**及其所有內容**禁止刪除：
-  `~/Library/Keychains`、`~/Library/Mobile Documents`（iCloud Drive）、`~/Library/Mail`、`~/Library/Messages`、`~/Library/Accounts`、`~/Library/Cookies`、`~/Library/Preferences`、`~/Library/CloudStorage`、`~/.ssh`、`~/.gnupg`、`~/.config`、任何 `*.photoslibrary`、任何 `.git` 目錄本身
+  `~/Library/Keychains`、`~/Library/Mobile Documents`（iCloud Drive）、`~/Library/Mail`、`~/Library/Messages`、`~/Library/Accounts`、`~/Library/Cookies`、`~/Library/Preferences`、`~/Library/CloudStorage`、`~/Library/Logs/disk-sweeper`（本工具的紀錄檔）、`~/.ssh`、`~/.gnupg`、`~/.config`、任何 `*.photoslibrary`、任何 `.git` 目錄本身
 - 位於 git 工作目錄內且未比對到 🟢 可重建規則的路徑 → 最高只能是 🟡（垃圾桶）
 - symlink：只刪除連結本身，永不跟隨
 - 與掃描根目錄不同 `st_dev` 的路徑：掃描時跳過
@@ -141,8 +141,8 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 | `xcode-archives` | `Library/Developer/Xcode/Archives/*` | 🟡 |
 | `xcode-device-support` | `Library/Developer/Xcode/iOS DeviceSupport/*`（及 watchOS/tvOS） | 🟢 |
 | `simulator` | `Library/Developer/CoreSimulator` | ⚙ `xcrun simctl delete unavailable` |
-| `node-modules` | 名為 `node_modules`、同層有 `package.json`、不在另一個 `node_modules` 內 | 🟢 |
-| `rust-target` | 名為 `target`、同層有 `Cargo.toml` | 🟢 |
+| `node-modules` | 名為 `node_modules`、同層有 `package.json`、不在另一個 `node_modules` 內，且路徑中沒有 `.` 開頭的目錄或 `Library`（避免刪到全域安裝的套件與編輯器擴充套件） | 🟢 |
+| `rust-target` | 名為 `target`、同層有 `Cargo.toml`，路徑限制同 `node-modules` | 🟢 |
 | `npm-cache` | `.npm/_cacache` | 🟢 |
 | `bun-cache` | `.bun/install/cache` | 🟢 |
 | `pnpm-store` | `Library/pnpm/store` | ⚙ `pnpm store prune` |
@@ -206,6 +206,7 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 
 - 頂部：掃描根目錄、磁碟總量/可用（`statfs`）、目前模式
 - 掃描中：顯示進度（檔案數、位元組、目前路徑）與目前累計最大的前幾個目錄
+- 風險等級以彩色文字標籤顯示（可重建 / 使用者資料 / 工具管理 / 受保護），不用 emoji，避免終端機寬度不一致破壞對齊
 - 按鍵：`↑↓/jk` 移動、`→/⏎/l` 進入、`←/h` 返回、`space` 標記、`Tab` 切換模式、`d` 清理、`u` 無法讀取清單、`?` 說明、`q` 離開
 - Suggest 模式：可展開的類別群組；在群組上按 `space` 標記整組（🔴 除外）
 - 確認畫面 → 執行中進度 → 結果畫面（成功/跳過/失敗數、實際釋放空間 = 執行前後 `statfs` 可用空間差）
@@ -217,6 +218,7 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 disk-sweeper [PATH]            # 預設 $HOME；PATH 必須在 $HOME 之下
   --dry-run                    # 不實際變更檔案
   --min-node-size <SIZE>       # 例：64K
+  --scan-only                  # 只掃描並印出摘要（量測效能用），不啟動 TUI
 ```
 
 ## 10. 錯誤處理
