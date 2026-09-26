@@ -160,8 +160,8 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 
 | id | 比對 | 風險 |
 |---|---|---|
-| `app-caches` | `Library/Caches/*`（每個子目錄一項） | 🟢 |
 | `homebrew-cache` | `Library/Caches/Homebrew` | ⚙ `brew cleanup --prune=all` |
+| `app-caches` | `Library/Caches/*`（每個子目錄一項） | 🟢 |
 | `user-logs` | `Library/Logs/*`（排除 `disk-sweeper` 自身） | 🟢 |
 
 較具體的規則優先於 `app-caches`（例如 `homebrew-cache`、`yarn-cache`、`pip-cache`）。
