@@ -2,6 +2,12 @@
 name = "disk-sweeper"
 version = "0.1.0"
 edition = "2021"
+description = "A fast, safety-first TUI disk cleaner for macOS"
+license = "MIT"
+repository = "https://github.com/syshen/disk-sweeper"
+readme = "README.md"
+keywords = ["disk", "cleaner", "tui", "macos", "cli"]
+categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 anyhow = "1"
