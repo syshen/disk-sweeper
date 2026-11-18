@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
+use std::borrow::Cow;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -11,6 +12,7 @@ use crate::rules::{self, Category, Suggestion};
 use crate::safety::{self, ApprovedTarget, Candidate, Verdict};
 use crate::scan::{self, Progress, ScanError, ScanEvent};
 use crate::tree::{NodeId, Tree};
+use crate::worktree::{self, Worktree};
 
 const TYPED_CONFIRM_THRESHOLD: u64 = 10 << 30;
 const SMALL_ITEM: u64 = 10 << 20;
@@ -81,13 +83,16 @@ pub struct App {
     pub errors: Vec<ScanError>,
     pub needs_fda: bool,
     pub suggestions: Vec<Suggestion>,
+    pub worktrees: Vec<Worktree>,
+    /// 掃描完成、git worktree 還在檢查中
+    pub worktrees_pending: bool,
     sugg_by_node: HashMap<NodeId, usize>,
     pub mode: Mode,
     pub screen: Screen,
     /// 目錄堆疊：(目錄, 游標)，最後一個是目前所在目錄
     pub explore: Vec<(NodeId, usize)>,
     pub suggest_cursor: usize,
-    pub expanded: [bool; 3],
+    pub expanded: [bool; Category::ALL.len()],
     pub show_small: bool,
     pub marks: BTreeMap<NodeId, Mark>,
     pub confirm: Option<ConfirmState>,
@@ -111,12 +116,14 @@ impl App {
             errors: Vec::new(),
             needs_fda: false,
             suggestions: Vec::new(),
+            worktrees: Vec::new(),
+            worktrees_pending: false,
             sugg_by_node: HashMap::new(),
             mode: Mode::Explore,
             screen: Screen::Main,
             explore: Vec::new(),
             suggest_cursor: 0,
-            expanded: [true; 3],
+            expanded: [true; Category::ALL.len()],
             show_small: false,
             marks: BTreeMap::new(),
             confirm: None,
@@ -140,6 +147,8 @@ impl App {
             ScanEvent::Done(r) => {
                 self.needs_fda = scan::needs_full_disk_access(&r.errors, &self.ctx.home);
                 self.errors = r.errors;
+                self.worktrees.clear();
+                self.worktrees_pending = !r.git_dirs.is_empty();
                 self.explore = vec![(r.tree.root(), 0)];
                 self.status = Some(format!("掃描完成，耗時 {:.1} 秒", r.elapsed.as_secs_f64()));
                 self.tree = Some(r.tree);
@@ -148,12 +157,47 @@ impl App {
                 self.mode = Mode::Suggest;
                 self.suggest_cursor = 0;
             }
+            ScanEvent::Worktrees(wts) => {
+                self.worktrees = wts;
+                self.worktrees_pending = false;
+                self.refresh_suggestions();
+                self.clamp_suggest_cursor();
+            }
         }
     }
 
+    /// 規則建議加上 worktree 建議。worktree 本身的節點以 worktree 判斷為準；
+    /// 可移除的 worktree 會整個移除，裡面個別的建議（node_modules 等）不再列出。
     fn refresh_suggestions(&mut self) {
         if let Some(tree) = &self.tree {
-            self.suggestions = rules::evaluate(tree, &self.ctx, self.now);
+            let wts: Vec<&Worktree> = self
+                .worktrees
+                .iter()
+                .filter(|w| safety::protection_reason(&tree.path_of(w.node), &self.ctx).is_none())
+                .collect();
+            let wt_nodes: HashSet<NodeId> = wts.iter().map(|w| w.node).collect();
+            let mut sugg = rules::evaluate(tree, &self.ctx, self.now);
+            sugg.retain(|s| {
+                !wt_nodes.contains(&s.node)
+                    && !wts
+                        .iter()
+                        .any(|w| w.removable() && tree.is_ancestor(w.node, s.node))
+            });
+            sugg.extend(wts.iter().map(|w| Suggestion {
+                node: w.node,
+                rule_id: worktree::RULE_ID,
+                category: Category::Worktree,
+                risk: if w.removable() {
+                    Risk::Worktree
+                } else {
+                    Risk::Protected
+                },
+                description: Cow::Owned(w.description()),
+                command: None,
+                size: tree.node(w.node).size,
+            }));
+            sugg.sort_by_key(|s| std::cmp::Reverse(s.size));
+            self.suggestions = sugg;
             self.sugg_by_node = self
                 .suggestions
                 .iter()
@@ -334,6 +378,7 @@ impl App {
     fn toggle_group(&mut self, cat: Category) {
         let nodes: Vec<NodeId> = self
             .visible_items(cat)
+            .filter(|&i| self.suggestions[i].risk != Risk::Protected)
             .map(|i| self.suggestions[i].node)
             .collect();
         if nodes.is_empty() {
@@ -373,6 +418,10 @@ impl App {
             return;
         }
         let mark = match self.sugg_by_node.get(&id) {
+            Some(&i) if self.suggestions[i].risk == Risk::Protected => {
+                self.status = Some(format!("無法標記：{}", self.suggestions[i].description));
+                return;
+            }
             Some(&i) => {
                 let s = &self.suggestions[i];
                 Mark {
@@ -427,7 +476,9 @@ impl App {
             .collect();
         let total: u64 = approved.iter().map(|t| t.size()).sum();
         let need_typed = total > TYPED_CONFIRM_THRESHOLD
-            || approved.iter().any(|t| t.handling() == Handling::Trash);
+            || approved
+                .iter()
+                .any(|t| matches!(t.handling(), Handling::Trash | Handling::RemoveWorktree));
         let warnings = procs::running_app_warnings(approved.iter().filter_map(|t| t.rule_id()));
         self.confirm = Some(ConfirmState {
             items,
@@ -515,6 +566,10 @@ impl App {
                 }
             }
         }
+        // 已移除（或被上層目錄一起清掉）的 worktree 不再列出
+        if let Some(tree) = &self.tree {
+            self.worktrees.retain(|w| tree.is_attached(w.node));
+        }
         if let Some(tree) = &self.tree {
             self.explore = vec![(tree.root(), 0)];
         }
@@ -535,6 +590,8 @@ impl App {
         self.errors.clear();
         self.needs_fda = false;
         self.suggestions.clear();
+        self.worktrees.clear();
+        self.worktrees_pending = false;
         self.sugg_by_node.clear();
         self.explore.clear();
         self.suggest_cursor = 0;
@@ -585,6 +642,7 @@ mod tests {
         let mut app = App::new(ctx, false, None, 1_800_000_000);
         let tree = tree_from("/h", files);
         app.on_scan_event(ScanEvent::Done(ScanResult {
+            git_dirs: vec![],
             tree,
             errors: vec![],
             elapsed: Duration::ZERO,
@@ -637,6 +695,7 @@ mod tests {
         let mut app = App::new(ctx, false, None, 0);
         app.suggest_cursor = 3;
         app.on_scan_event(ScanEvent::Done(ScanResult {
+            git_dirs: vec![],
             tree: tree_from("/h", &[("a", 1)]),
             errors: vec![],
             elapsed: Duration::ZERO,
@@ -902,6 +961,7 @@ mod tests {
         assert_eq!(app.last_progress_change, changed);
         // 掃描完成後不算卡住
         app.on_scan_event(ScanEvent::Done(ScanResult {
+            git_dirs: vec![],
             tree: tree_from("/h", &[("a", 1)]),
             errors: vec![],
             elapsed: Duration::ZERO,
@@ -926,12 +986,93 @@ mod tests {
         // 掃描中再按 r 不會重複觸發
         assert!(app.on_key(key('r')).is_none());
         app.on_scan_event(ScanEvent::Done(ScanResult {
+            git_dirs: vec![],
             tree: tree_from("/h", &[("a", 1)]),
             errors: vec![],
             elapsed: Duration::ZERO,
         }));
         assert!(app.tree.is_some());
         assert_eq!(app.mode, Mode::Suggest);
+    }
+
+    #[test]
+    fn worktrees_join_suggestions_and_only_removable_ones_can_be_marked() {
+        let mut app = app_with(&[
+            ("Projects/wt-a/.git", 1),
+            ("Projects/wt-a/package.json", 1),
+            ("Projects/wt-a/node_modules/x", 20 << 20),
+            ("Projects/wt-b/.git", 1),
+            ("Projects/wt-b/package.json", 1),
+            ("Projects/wt-b/node_modules/x", 30 << 20),
+        ]);
+        let tree = app.tree.as_ref().unwrap();
+        let (a, b) = (find(tree, "Projects/wt-a"), find(tree, "Projects/wt-b"));
+        let nm_b = find(tree, "Projects/wt-b/node_modules");
+        app.on_scan_event(ScanEvent::Worktrees(vec![
+            Worktree {
+                node: a,
+                branch: Some("a".into()),
+                status: worktree::Status::Removable {
+                    kept_in: "main".into(),
+                },
+            },
+            Worktree {
+                node: b,
+                branch: Some("b".into()),
+                status: worktree::Status::Keep("有未 commit 的修改或未追蹤的檔案".into()),
+            },
+        ]));
+        assert!(!app.worktrees_pending);
+        let rules: Vec<(NodeId, Risk)> = app.suggestions.iter().map(|s| (s.node, s.risk)).collect();
+        // 可移除的 worktree 裡面的 node_modules 不再另外列；保留的 worktree 裡面的照列
+        assert_eq!(
+            rules,
+            vec![
+                (b, Risk::Protected),
+                (nm_b, Risk::Regenerable),
+                (a, Risk::Worktree)
+            ]
+        );
+
+        app.on_key(code(KeyCode::Tab));
+        let header = app
+            .suggest_rows()
+            .iter()
+            .position(|r| *r == SuggestRow::Header(Category::Worktree))
+            .unwrap();
+        app.suggest_cursor = header;
+        app.on_key(key(' ')); // 整組標記只會標到可移除的
+        assert_eq!(app.marks.keys().copied().collect::<Vec<_>>(), vec![a]);
+
+        app.on_key(code(KeyCode::Tab)); // Explore
+        app.on_key(key('l')); // 進入 Projects
+        app.on_key(key(' ')); // wt-b 最大、排第一：無法標記
+        assert!(!app.marks.contains_key(&b));
+        assert!(app.status.as_deref().unwrap().contains("保留"));
+    }
+
+    #[test]
+    fn removed_worktree_disappears_from_suggestions() {
+        let mut app = app_with(&[("Projects/wt/.git", 1), ("Projects/wt/f", 100)]);
+        let wt = find(app.tree.as_ref().unwrap(), "Projects/wt");
+        app.on_scan_event(ScanEvent::Worktrees(vec![Worktree {
+            node: wt,
+            branch: None,
+            status: worktree::Status::Removable {
+                kept_in: "main".into(),
+            },
+        }]));
+        assert_eq!(app.suggestions.len(), 1);
+        let result = ActionResult {
+            path: PathBuf::from("/h/Projects/wt"),
+            size: 100,
+            handling: Handling::RemoveWorktree,
+            outcome: Outcome::Done,
+            output: None,
+        };
+        app.on_executed(vec![(wt, result)], None);
+        assert!(app.suggestions.is_empty());
+        assert!(app.worktrees.is_empty());
     }
 
     #[test]

@@ -71,6 +71,7 @@ pub fn draw_help(f: &mut Frame, area: Rect) {
     let lines: Vec<Line> = [
         " Explore：瀏覽目錄大小；space 可標記任何項目（未比對到規則的一律移到垃圾桶）",
         " Suggest：依內建規則列出可清理項目；在類別上按 space 整組標記",
+        " Git worktree：乾淨且 commit 都還在其他 branch / remote / tag 的才可移除（移到垃圾桶＋prune，branch 保留）",
         "",
         " ↑↓ / j k    移動",
         " → / l / ⏎   進入目錄（Suggest：展開或收合類別）",
@@ -84,6 +85,7 @@ pub fn draw_help(f: &mut Frame, area: Rect) {
         " q / Ctrl-C  離開",
         "",
         " 可重建＝直接刪除 · 使用者資料＝移到垃圾桶 · 工具管理＝執行官方指令 · 受保護＝不可刪除",
+        " worktree＝再檢查一次後移到垃圾桶並 git worktree prune",
         "",
         " 按任意鍵返回",
     ]

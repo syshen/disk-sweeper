@@ -6,6 +6,7 @@ use ratatui::Frame;
 
 use super::{display_path, pad, risk_style};
 use crate::app::{App, SuggestRow};
+use crate::rules::Category;
 use crate::size::format_size;
 
 pub fn draw(f: &mut Frame, area: Rect, app: &App) {
@@ -31,6 +32,11 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(format!("  {count} 項 · {}", format_size(total))),
+                    Span::raw(if cat == Category::Worktree && app.worktrees_pending {
+                        "  檢查中…"
+                    } else {
+                        ""
+                    }),
                 ]))
             }
             SuggestRow::Item(i) => {

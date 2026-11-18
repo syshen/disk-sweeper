@@ -135,6 +135,7 @@ pub(crate) fn risk_style(r: Risk) -> Style {
         Risk::UserData => Color::Yellow,
         Risk::Protected => Color::Red,
         Risk::ToolManaged => Color::Cyan,
+        Risk::Worktree => Color::Blue,
     })
 }
 
@@ -261,6 +262,7 @@ mod tests {
             ],
         );
         app.on_scan_event(ScanEvent::Done(ScanResult {
+            git_dirs: vec![],
             tree,
             errors: vec![],
             elapsed: Duration::ZERO,
@@ -353,6 +355,7 @@ mod tests {
         let tree = tree_from("/h", &[("Projects/x", 1)]);
         let node = tree.root();
         app.on_scan_event(ScanEvent::Done(ScanResult {
+            git_dirs: vec![],
             tree,
             errors: vec![],
             elapsed: Duration::ZERO,
@@ -450,6 +453,7 @@ mod tests {
         let tree = tree_from("/h", &[("x", 1)]);
         let node = tree.root();
         app.on_scan_event(ScanEvent::Done(ScanResult {
+            git_dirs: vec![],
             tree,
             errors: vec![],
             elapsed: Duration::ZERO,
@@ -578,6 +582,7 @@ mod tests {
             &[("Projects/web/node_modules/react/index.js", 800 << 20)],
         );
         app.on_scan_event(ScanEvent::Done(ScanResult {
+            git_dirs: vec![],
             tree,
             errors: vec![],
             elapsed: Duration::ZERO,

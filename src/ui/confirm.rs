@@ -44,10 +44,14 @@ fn item_lines(item: &ConfirmItem, app: &App, width: usize) -> Vec<Line<'static>>
                 width,
                 Style::default(),
             ));
-            let desc = t
-                .rule_id()
-                .and_then(|id| CATALOG.iter().find(|r| r.id == id))
-                .map(|r| r.description);
+            let desc = app
+                .suggestion_for(item.node)
+                .map(|s| s.description.as_ref())
+                .or_else(|| {
+                    t.rule_id()
+                        .and_then(|id| CATALOG.iter().find(|r| r.id == id))
+                        .map(|r| r.description)
+                });
             if let Some(desc) = desc {
                 lines.extend(wrapped(desc, width, dim));
             }

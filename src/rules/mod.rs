@@ -1,5 +1,7 @@
 mod catalog;
 
+use std::borrow::Cow;
+
 pub use catalog::CATALOG;
 
 use crate::context::Context;
@@ -10,16 +12,23 @@ use crate::tree::{NodeId, NodeKind, Tree};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Category {
     DevTools,
+    Worktree,
     AppCache,
     LargeFiles,
 }
 
 impl Category {
-    pub const ALL: [Category; 3] = [Category::DevTools, Category::AppCache, Category::LargeFiles];
+    pub const ALL: [Category; 4] = [
+        Category::DevTools,
+        Category::Worktree,
+        Category::AppCache,
+        Category::LargeFiles,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
             Category::DevTools => "開發工具",
+            Category::Worktree => "Git worktree",
             Category::AppCache => "系統與 App cache",
             Category::LargeFiles => "大型使用者檔案",
         }
@@ -77,7 +86,7 @@ pub struct Suggestion {
     pub rule_id: &'static str,
     pub category: Category,
     pub risk: Risk,
-    pub description: &'static str,
+    pub description: Cow<'static, str>,
     pub command: Option<ToolCommand>,
     pub size: u64,
 }
@@ -151,7 +160,7 @@ pub fn evaluate(tree: &Tree, ctx: &Context, now: i64) -> Vec<Suggestion> {
                     rule_id: rule.id,
                     category: rule.category,
                     risk: rule.risk,
-                    description: rule.description,
+                    description: Cow::Borrowed(rule.description),
                     command: rule.command,
                     size: tree.node(id).size,
                 });

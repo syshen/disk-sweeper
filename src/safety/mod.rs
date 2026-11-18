@@ -123,6 +123,16 @@ fn check(c: &Candidate, ctx: &Context) -> Result<Checked, String> {
     let mut program_path = None;
     let handling = match c.risk {
         Risk::Protected => return Err("受保護的項目".into()),
+        Risk::Worktree => {
+            if c.rule_id != Some(crate::worktree::RULE_ID) {
+                return Err("worktree 必須經過 git 檢查".into());
+            }
+            if !meta.is_dir() {
+                return Err("worktree 必須是目錄".into());
+            }
+            program_path = Some(find_in_path("git", &ctx.path_var).ok_or("找不到指令 `git`")?);
+            Handling::RemoveWorktree
+        }
         // 只有比對到規則的「可重建」才直接刪除；其餘一律最多只能丟垃圾桶
         Risk::Regenerable if c.rule_id.is_some() => Handling::Delete,
         Risk::Regenerable | Risk::UserData => Handling::Trash,
@@ -322,6 +332,31 @@ mod tests {
         assert_eq!(
             handling(review(cand(p, Risk::UserData, None), &ctx)),
             Handling::Trash
+        );
+    }
+
+    #[test]
+    fn worktree_needs_its_rule_a_directory_and_git() {
+        let (_d, ctx) = setup();
+        let wt = ctx.home.join("Projects/repo");
+        let rule = Some(crate::worktree::RULE_ID);
+        // 測試用 PATH 裡沒有 git
+        assert!(rejected(&review(
+            cand(wt.clone(), Risk::Worktree, rule),
+            &ctx
+        )));
+        let ctx = Context::new(&ctx.home, std::env::var_os("PATH").unwrap()).unwrap();
+        assert!(rejected(&review(
+            cand(wt.clone(), Risk::Worktree, None),
+            &ctx
+        )));
+        assert!(rejected(&review(
+            cand(ctx.home.join("Documents/report.pdf"), Risk::Worktree, rule),
+            &ctx
+        )));
+        assert_eq!(
+            handling(review(cand(wt, Risk::Worktree, rule), &ctx)),
+            Handling::RemoveWorktree
         );
     }
 

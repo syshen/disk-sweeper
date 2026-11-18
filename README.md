@@ -51,6 +51,16 @@ disk-sweeper --min-node-size 64K   # 小檔案不建立節點，節省記憶體
 | `?` | 說明 |
 | `q` / `Ctrl-C` | 離開 |
 
+## Git worktree
+
+掃描時會找出所有 linked worktree（`git worktree add` 建立的），列在 Suggest 的「Git worktree」類別。同時符合以下條件才可以清：
+
+- 沒有被 `git worktree lock` 鎖定，也沒有進行中的 merge / rebase 等操作
+- 工作目錄乾淨：沒有未 commit 的修改、沒有未追蹤的檔案（被 `.gitignore` 的不算）
+- 目前的 commit 也在其他 branch、remote branch 或 tag 裡（已 merge 或已 push），移除後不會遺失任何 commit
+
+不符合的也會列出並顯示原因，但無法標記。清除時會先移到垃圾桶（`.env` 這類被 ignore 的檔案還救得回來），再執行 `git worktree prune`；branch 不會被刪除。用 `disk-sweeper --scan-only` 可以只看判斷結果。
+
 ## 安全模型
 
 所有刪除都必須通過單一的安全關卡（`safety::review`），它產生的 `ApprovedTarget` 是執行模組唯一接受的型別——從型別上就無法繞過檢查。
@@ -61,6 +71,7 @@ disk-sweeper --min-node-size 64K   # 小檔案不建立節點，節省記憶體
   - 可重建（快取、build 產物）→ 直接刪除
   - 使用者資料 → 移到垃圾桶（可用 Finder「放回原處」救回）
   - 工具管理（Docker、Simulator、Homebrew、pnpm）→ 不刪檔，改執行官方清理指令
+  - Git worktree → 動手前再用 git 檢查一次，移到垃圾桶後執行 `git worktree prune`，branch 保留
   - 受保護 → 無法標記
 - **執行前再檢查**：路徑在掃描後被改過或已消失就略過；相關 App 的執行狀態會提出警告
 - **確認**：列出每一項的路徑、大小、風險與規則說明；含垃圾桶項目或總量超過 10GB 時需輸入 `yes`

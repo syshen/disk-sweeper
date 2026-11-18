@@ -71,6 +71,8 @@ pub struct Progress {
 #[derive(Debug)]
 pub struct ScanResult {
     pub tree: Tree,
+    /// 含有 `.git` **檔案**的目錄（linked worktree 或 submodule 的候選）
+    pub git_dirs: Vec<NodeId>,
     pub errors: Vec<ScanError>,
     pub elapsed: Duration,
 }
@@ -79,6 +81,8 @@ pub struct ScanResult {
 pub enum ScanEvent {
     Progress(Progress),
     Done(ScanResult),
+    /// 掃描完成後，`git_dirs` 逐一用 git 檢查的結果（呼叫端負責送出）
+    Worktrees(Vec<crate::worktree::Worktree>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -118,6 +122,7 @@ pub fn scan(root: &Path, opts: &ScanOptions, tx: &Sender<ScanEvent>) -> ScanResu
         Err(e) => {
             return ScanResult {
                 tree: Tree::new(root.to_path_buf(), NodeMeta::default()),
+                git_dirs: Vec::new(),
                 errors: vec![ScanError::from_io(root, &e)],
                 elapsed: start.elapsed(),
             };
@@ -126,6 +131,7 @@ pub fn scan(root: &Path, opts: &ScanOptions, tx: &Sender<ScanEvent>) -> ScanResu
     let root_dev = root_meta.meta.dev;
     let mut tree = Tree::new(root.to_path_buf(), root_meta.meta);
     let mut errors = Vec::new();
+    let mut git_dirs = Vec::new();
     let mut dirs: HashMap<PathBuf, NodeId> = HashMap::from([(root.to_path_buf(), tree.root())]);
     let mut hard_links: HashSet<(u64, u64)> = HashSet::new();
     let mut top: HashMap<String, u64> = HashMap::new();
@@ -184,6 +190,9 @@ pub fn scan(root: &Path, opts: &ScanOptions, tx: &Sender<ScanEvent>) -> ScanResu
             meta.size = 0;
         }
         let name = entry.file_name.to_string_lossy();
+        if em.kind == NodeKind::File && name == ".git" {
+            git_dirs.push(parent);
+        }
         if em.kind == NodeKind::Dir {
             let id = tree.add(parent, &name, em.kind, meta);
             dirs.insert(path.clone(), id);
@@ -219,6 +228,7 @@ pub fn scan(root: &Path, opts: &ScanOptions, tx: &Sender<ScanEvent>) -> ScanResu
     tree.finalize();
     ScanResult {
         tree,
+        git_dirs,
         errors,
         elapsed: start.elapsed(),
     }
@@ -273,6 +283,20 @@ mod tests {
             },
             &tx,
         )
+    }
+
+    #[test]
+    fn records_dirs_with_a_dot_git_file_even_below_min_node_size() {
+        let (_d, r) = root();
+        write(&r.join("wt/.git"), 10); // worktree：.git 是檔案
+        write(&r.join("repo/.git/HEAD"), 10); // 一般 repo：.git 是目錄
+        let res = run(&r, 1 << 20);
+        let dirs: Vec<PathBuf> = res
+            .git_dirs
+            .iter()
+            .map(|&id| res.tree.path_of(id))
+            .collect();
+        assert_eq!(dirs, vec![r.join("wt")]);
     }
 
     #[test]

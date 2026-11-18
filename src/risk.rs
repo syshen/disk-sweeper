@@ -1,11 +1,14 @@
 /// 風險等級決定處理方式：可重建 → 直接刪除；使用者資料 → 垃圾桶；
-/// 工具管理 → 執行官方指令；受保護 → 不可處理。
+/// 工具管理 → 執行官方指令；可移除的 git worktree → 再檢查後移到垃圾桶並 prune；
+/// 受保護 → 不可處理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Risk {
     Regenerable,
     UserData,
     Protected,
     ToolManaged,
+    /// 經 git 檢查可安全移除的 linked worktree
+    Worktree,
 }
 
 impl Risk {
@@ -15,6 +18,7 @@ impl Risk {
             Risk::UserData => "使用者資料",
             Risk::Protected => "受保護",
             Risk::ToolManaged => "工具管理",
+            Risk::Worktree => "worktree",
         }
     }
 }
@@ -39,6 +43,8 @@ pub enum Handling {
     Delete,
     Trash,
     Command(ToolCommand),
+    /// 動手前再用 git 檢查一次，移到垃圾桶後在主 repo 執行 `git worktree prune`
+    RemoveWorktree,
 }
 
 impl Handling {
@@ -47,6 +53,7 @@ impl Handling {
             Handling::Delete => "直接刪除",
             Handling::Trash => "移到垃圾桶",
             Handling::Command(_) => "執行指令",
+            Handling::RemoveWorktree => "移除 worktree",
         }
     }
 }

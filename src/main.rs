@@ -10,9 +10,10 @@ use ratatui::DefaultTerminal;
 use disk_sweeper::action::{self, journal::ActionLog, SystemTrash};
 use disk_sweeper::app::{App, Effect};
 use disk_sweeper::context::Context;
-use disk_sweeper::safety::ApprovedTarget;
+use disk_sweeper::safety::{self, ApprovedTarget};
 use disk_sweeper::scan::{self, ScanEvent, ScanOptions};
 use disk_sweeper::tree::NodeId;
+use disk_sweeper::worktree::{self, Worktree};
 use disk_sweeper::{disk, size, ui};
 
 #[derive(Parser)]
@@ -59,10 +60,32 @@ fn main() -> Result<()> {
             r.errors.len(),
             r.elapsed.as_secs_f64()
         );
+        let git = safety::find_in_path("git", &ctx.path_var);
+        for &id in &r.git_dirs {
+            let path = r.tree.path_of(id);
+            if let Some((branch, status)) = worktree::inspect(&path, git.as_deref()) {
+                let wt = Worktree {
+                    node: id,
+                    branch,
+                    status,
+                };
+                let tag = if wt.removable() {
+                    "可移除"
+                } else {
+                    "保留"
+                };
+                println!(
+                    "[worktree {tag}] {} {} · {}",
+                    size::format_size(r.tree.node(id).size),
+                    path.display(),
+                    wt.description()
+                );
+            }
+        }
         return Ok(());
     }
 
-    let rx = spawn_scan(&root, &opts);
+    let rx = spawn_scan(&root, &opts, &ctx);
     let now = chrono::Local::now().timestamp();
     let mut app = App::new(ctx, cli.dry_run, disk::disk_info(&root).ok(), now);
     // ratatui::init 會安裝 panic hook，panic 時也會恢復終端機
@@ -72,12 +95,33 @@ fn main() -> Result<()> {
     res
 }
 
-fn spawn_scan(root: &Path, opts: &ScanOptions) -> mpsc::Receiver<ScanEvent> {
+/// 背景掃描；完成後先送出 `Done`，再逐一用 git 檢查 worktree 候選、送出 `Worktrees`
+fn spawn_scan(root: &Path, opts: &ScanOptions, ctx: &Context) -> mpsc::Receiver<ScanEvent> {
     let (tx, rx) = mpsc::channel();
     let (root, opts) = (root.to_path_buf(), opts.clone());
+    let git = safety::find_in_path("git", &ctx.path_var);
     std::thread::spawn(move || {
         let result = scan::scan(&root, &opts, &tx);
-        let _ = tx.send(ScanEvent::Done(result));
+        let candidates: Vec<(NodeId, PathBuf)> = result
+            .git_dirs
+            .iter()
+            .map(|&id| (id, result.tree.path_of(id)))
+            .collect();
+        if tx.send(ScanEvent::Done(result)).is_err() {
+            return;
+        }
+        let worktrees = candidates
+            .into_iter()
+            .filter_map(|(node, path)| {
+                let (branch, status) = worktree::inspect(&path, git.as_deref())?;
+                Some(Worktree {
+                    node,
+                    branch,
+                    status,
+                })
+            })
+            .collect();
+        let _ = tx.send(ScanEvent::Worktrees(worktrees));
     });
     rx
 }
@@ -115,7 +159,7 @@ fn run(
             Some(Effect::Rescan) => {
                 let now = chrono::Local::now().timestamp();
                 app.begin_rescan(disk::disk_info(root).ok(), now);
-                rx = spawn_scan(root, opts);
+                rx = spawn_scan(root, opts, &app.ctx);
             }
             None => {}
         }

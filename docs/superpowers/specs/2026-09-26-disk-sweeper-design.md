@@ -112,6 +112,7 @@ src/
 | 🟡 `UserData` | 使用者資料，可能有價值 | 移到垃圾桶 |
 | 🔴 `Protected` | 禁區 | 無法標記，UI 顯示原因 |
 | ⚙ `ToolManaged` | 由工具管理的資料（Docker、Simulator） | 不做檔案刪除，只提供官方清理指令 |
+| `Worktree` | 經 git 檢查可安全移除的 linked worktree（見 6.5） | 動手前用 git 重新檢查，移到垃圾桶後在主 repo 執行 `git worktree prune`；branch 保留 |
 
 Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則一律 🟡。
 
@@ -186,6 +187,15 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 - 單次走訪樹，每個節點依本節表格順序比對規則，第一個符合者勝出（因此 `installers` 優先於 `old-downloads`，具體規則優先於 `app-caches`，`large-files` 最後）；比對到的節點不再往下比對（避免父子重複計算）
 - 每條規則附 `description`：說明內容是什麼、刪除後果（例：「Xcode 會在下次 build 時重建，第一次 build 會較慢」）
 - Suggest 列表依類別分組，組內依大小排序；小於 10 MB 的項目預設隱藏
+
+### 6.5 Git worktree
+
+- 偵測：掃描時記下含有 `.git` **檔案**的目錄（不受 `--min-node-size` 影響）。`.git` 檔案指向的目錄必須有 `commondir`、且其 `gitdir` 指回這個 worktree，才算 linked worktree（submodule、主 repo 本身不算）
+- 掃描完成後在背景執行緒逐一用 `git` 檢查，結果以 `ScanEvent::Worktrees` 送回，UI 不會被卡住（類別標題顯示「檢查中…」）
+- 可移除的條件（全部成立）：未被 `git worktree lock` 鎖定；沒有進行中的 merge / rebase / cherry-pick / revert / bisect；`git status --porcelain` 為空（被 ignore 的檔案不算）；`for-each-ref --contains HEAD` 除了自己的 branch 與 `refs/stash` 之外還有其他 ref（別的 branch、remote branch 或 tag）
+- 不符合的也會列在「Git worktree」類別並顯示原因，但風險為 `Protected`，Suggest 與 Explore 都無法標記；整組標記只會標到可移除的
+- 可移除的 worktree 底下個別的規則建議（如 `node_modules`）不再另外列出，避免重複
+- `--scan-only` 也會印出每個 worktree 的判斷結果
 
 ## 7. 掃描引擎
 

@@ -35,11 +35,10 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
             format_size(freed.unsigned_abs())
         )));
     }
-    if app
-        .results
-        .iter()
-        .any(|r| r.handling == Handling::Trash && r.outcome == Outcome::Done)
-    {
+    if app.results.iter().any(|r| {
+        matches!(r.handling, Handling::Trash | Handling::RemoveWorktree)
+            && r.outcome == Outcome::Done
+    }) {
         lines.push(Line::from(Span::styled(
             " 移到垃圾桶的項目要清空垃圾桶後才會釋放空間",
             Style::default().fg(Color::Yellow),

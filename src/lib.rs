@@ -9,3 +9,4 @@ pub mod scan;
 pub mod size;
 pub mod tree;
 pub mod ui;
+pub mod worktree;

@@ -7,6 +7,7 @@ use std::process::Command;
 
 use crate::risk::Handling;
 use crate::safety::ApprovedTarget;
+use crate::worktree;
 use journal::{ActionLog, ActionRecord};
 
 const MAX_DETAIL_CHARS: usize = 2000;
@@ -168,7 +169,9 @@ fn precheck(t: &ApprovedTarget, dry_run: bool) -> PreCheck {
         return PreCheck::Terminal(Outcome::Skipped("掃描後已變動".into()), None);
     }
     if dry_run {
-        return PreCheck::Terminal(Outcome::DryRun, None);
+        let note = (t.handling() == Handling::RemoveWorktree)
+            .then(|| "將再次檢查後移到垃圾桶，並執行 git worktree prune".to_string());
+        return PreCheck::Terminal(Outcome::DryRun, note);
     }
     // symlink_metadata 對 symlink 回傳 is_dir() == false，所以只會刪除連結本身
     PreCheck::Proceed {
@@ -202,16 +205,47 @@ fn perform(t: &ApprovedTarget, is_dir: bool, trasher: &dyn Trasher) -> (Outcome,
             Err(e) => (Outcome::Failed(e.to_string()), None),
         };
     }
+    if t.handling() == Handling::RemoveWorktree {
+        return remove_worktree(t, trasher);
+    }
     let res = match t.handling() {
         // trash 失敗時只回報錯誤，絕不改為直接刪除
         Handling::Trash => trasher.trash(t.path()),
         Handling::Delete if is_dir => std::fs::remove_dir_all(t.path()).map_err(|e| e.to_string()),
         Handling::Delete => std::fs::remove_file(t.path()).map_err(|e| e.to_string()),
-        Handling::Command(_) => unreachable!("handled above"),
+        Handling::Command(_) | Handling::RemoveWorktree => unreachable!("handled above"),
     };
     match res {
         Ok(()) => (Outcome::Done, None),
         Err(e) => (Outcome::Failed(e), None),
+    }
+}
+
+/// 掃描後 worktree 可能又有新的修改或 commit：動手前用 git 重新檢查一次，
+/// 仍可移除才移到垃圾桶，再到主 repo 執行 `git worktree prune`。
+fn remove_worktree(t: &ApprovedTarget, trasher: &dyn Trasher) -> (Outcome, Option<String>) {
+    let Some(git) = t.program_path() else {
+        return (Outcome::Failed("缺少已檢查的 git 路徑".into()), None);
+    };
+    match worktree::inspect(t.path(), Some(git)) {
+        Some((_, worktree::Status::Removable { .. })) => {}
+        Some((_, worktree::Status::Keep(reason))) => return (Outcome::Skipped(reason), None),
+        None => return (Outcome::Skipped("已不是 git worktree".into()), None),
+    }
+    let Some(common) = worktree::common_dir(t.path()) else {
+        return (Outcome::Skipped("已不是 git worktree".into()), None);
+    };
+    // trash 失敗時只回報錯誤，絕不改為直接刪除
+    if let Err(e) = trasher.trash(t.path()) {
+        return (Outcome::Failed(e), None);
+    }
+    match worktree::prune(git, &common) {
+        Ok(out) if out.is_empty() => (Outcome::Done, Some("已執行 git worktree prune".into())),
+        Ok(out) => (Outcome::Done, Some(out)),
+        Err(e) => (
+            Outcome::Done,
+            Some(format!("已移到垃圾桶，但 git worktree prune 失敗：{e}")),
+        ),
     }
 }
 
@@ -220,6 +254,7 @@ fn handling_str(h: Handling) -> &'static str {
         Handling::Delete => "delete",
         Handling::Trash => "trash",
         Handling::Command(_) => "command",
+        Handling::RemoveWorktree => "worktree",
     }
 }
 
@@ -336,6 +371,37 @@ mod tests {
             lines.next().is_none(),
             "expected exactly one pending line and one outcome line"
         );
+    }
+
+    #[test]
+    fn worktree_is_rechecked_trashed_and_pruned() {
+        use crate::worktree::{self, testutil};
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Context::new(d.path(), std::env::var_os("PATH").unwrap()).unwrap();
+        let base = ctx.home.join("Projects");
+        fs::create_dir_all(&base).unwrap();
+        let repo = testutil::repo(&base);
+        let clean = testutil::add_worktree(&repo, &base, "clean");
+        let dirty = testutil::add_worktree(&repo, &base, "dirty");
+        let rule = Some(worktree::RULE_ID);
+        let targets = [
+            approve(&clean, Risk::Worktree, rule, None, &ctx),
+            approve(&dirty, Risk::Worktree, rule, None, &ctx),
+        ];
+        // 審核之後才改的檔案（不影響目錄本身的 mtime），要靠動手前的 git 重新檢查擋下
+        fs::write(dirty.join("README"), "changed").unwrap();
+
+        let dry = execute(&targets, true, None, &FakeTrash::default());
+        assert!(dry.iter().all(|r| r.outcome == Outcome::DryRun));
+
+        let trash = FakeTrash::default();
+        let mut log = log_in(&d);
+        let res = execute(&targets, false, Some(&mut log), &trash);
+        assert_eq!(res[0].outcome, Outcome::Done);
+        assert!(matches!(&res[1].outcome, Outcome::Skipped(r) if r.contains("未 commit")));
+        assert_eq!(*trash.0.borrow(), vec![clean.clone()]);
+        let text = fs::read_to_string(d.path().join("logs/actions.jsonl")).unwrap();
+        assert!(text.contains(r#""handling":"worktree""#));
     }
 
     #[test]

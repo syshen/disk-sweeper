@@ -170,6 +170,18 @@ impl Tree {
             .find(|c| &*self.node(*c).name == name)
     }
 
+    /// 節點（以及每一層祖先）是否還掛在樹上；被 `subtract` 移除的子樹回傳 false
+    pub fn is_attached(&self, id: NodeId) -> bool {
+        let mut cur = id;
+        while let Some(p) = self.nodes[cur.index()].parent {
+            if !self.nodes[p.index()].children.contains(&cur) {
+                return false;
+            }
+            cur = p;
+        }
+        true
+    }
+
     /// 刪除成功後呼叫：從父節點移除並從所有祖先扣除大小。重複呼叫不會重複扣除。
     pub fn subtract(&mut self, id: NodeId) {
         let Some(parent) = self.node(id).parent else {
@@ -286,6 +298,18 @@ mod tests {
         assert_eq!(t.node(t.root()).file_count, 1);
         assert_eq!(t.node(a).size, 10);
         assert!(!t.node(a).children.contains(&b));
+    }
+
+    #[test]
+    fn is_attached_is_false_below_subtracted_node() {
+        let mut t = tree_from("/h", &[("a/b/x", 100), ("c", 1)]);
+        let (a, x, c) = (find(&t, "a"), find(&t, "a/b/x"), find(&t, "c"));
+        assert!(t.is_attached(x));
+        t.subtract(a);
+        assert!(!t.is_attached(a));
+        assert!(!t.is_attached(x));
+        assert!(t.is_attached(c));
+        assert!(t.is_attached(t.root()));
     }
 
     #[test]
