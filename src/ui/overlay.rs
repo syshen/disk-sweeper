@@ -79,6 +79,7 @@ pub fn draw_help(f: &mut Frame, area: Rect) {
         " a           顯示 / 隱藏小於 10MB 的建議",
         " tab         切換 Explore / Suggest",
         " d           檢視並執行清理",
+        " r           重新掃描（會清除目前的標記）",
         " u           無法讀取的路徑",
         " q / Ctrl-C  離開",
         "",

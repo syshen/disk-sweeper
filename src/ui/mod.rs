@@ -116,10 +116,10 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     }
     let keys = match app.mode {
         Mode::Explore => {
-            " ↑↓/jk 移動  →/l 進入  ←/h 返回  space 標記  tab 切換  d 清理  ? 說明  q 離開"
+            " ↑↓/jk 移動  →/l 進入  ←/h 返回  space 標記  tab 切換  d 清理  r 重新掃描  ? 說明  q 離開"
         }
         Mode::Suggest => {
-            " ↑↓/jk 移動  ⏎ 展開  space 標記  a 小項目  tab 切換  d 清理  ? 說明  q 離開"
+            " ↑↓/jk 移動  ⏎ 展開  space 標記  a 小項目  tab 切換  d 清理  r 重新掃描  ? 說明  q 離開"
         }
     };
     let lines = vec![

@@ -62,27 +62,32 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (tx, rx) = mpsc::channel();
-    let scan_root = root.clone();
-    std::thread::spawn(move || {
-        let result = scan::scan(&scan_root, &opts, &tx);
-        let _ = tx.send(ScanEvent::Done(result));
-    });
-
+    let rx = spawn_scan(&root, &opts);
     let now = chrono::Local::now().timestamp();
     let mut app = App::new(ctx, cli.dry_run, disk::disk_info(&root).ok(), now);
     // ratatui::init 會安裝 panic hook，panic 時也會恢復終端機
     let mut terminal = ratatui::init();
-    let res = run(&mut terminal, &mut app, &rx, &root);
+    let res = run(&mut terminal, &mut app, rx, &root, &opts);
     ratatui::restore();
     res
+}
+
+fn spawn_scan(root: &Path, opts: &ScanOptions) -> mpsc::Receiver<ScanEvent> {
+    let (tx, rx) = mpsc::channel();
+    let (root, opts) = (root.to_path_buf(), opts.clone());
+    std::thread::spawn(move || {
+        let result = scan::scan(&root, &opts, &tx);
+        let _ = tx.send(ScanEvent::Done(result));
+    });
+    rx
 }
 
 fn run(
     terminal: &mut DefaultTerminal,
     app: &mut App,
-    rx: &mpsc::Receiver<ScanEvent>,
+    mut rx: mpsc::Receiver<ScanEvent>,
     root: &Path,
+    opts: &ScanOptions,
 ) -> Result<()> {
     while !app.quit {
         terminal.draw(|f| ui::draw(f, app))?;
@@ -98,13 +103,21 @@ fn run(
         if key.kind != KeyEventKind::Press {
             continue;
         }
-        if let Some(Effect::Execute(targets)) = app.on_key(key) {
-            terminal.draw(|f| ui::draw(f, app))?; // 先畫出「執行中」
-            execute(app, targets, root);
-            // 清理期間按下的鍵都丟掉，免得一回來就把結果畫面關掉
-            while event::poll(Duration::ZERO)? {
-                let _ = event::read()?;
+        match app.on_key(key) {
+            Some(Effect::Execute(targets)) => {
+                terminal.draw(|f| ui::draw(f, app))?; // 先畫出「執行中」
+                execute(app, targets, root);
+                // 清理期間按下的鍵都丟掉，免得一回來就把結果畫面關掉
+                while event::poll(Duration::ZERO)? {
+                    let _ = event::read()?;
+                }
             }
+            Some(Effect::Rescan) => {
+                let now = chrono::Local::now().timestamp();
+                app.begin_rescan(disk::disk_info(root).ok(), now);
+                rx = spawn_scan(root, opts);
+            }
+            None => {}
         }
     }
     Ok(())

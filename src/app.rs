@@ -68,6 +68,8 @@ pub enum SuggestRow {
 
 pub enum Effect {
     Execute(Vec<(NodeId, ApprovedTarget)>),
+    /// 重新掃描：呼叫端要啟動新的掃描執行緒，並呼叫 `App::begin_rescan`
+    Rescan,
 }
 
 pub struct App {
@@ -245,6 +247,7 @@ impl App {
                 }
             }
             KeyCode::Char('d') => self.begin_confirm(),
+            KeyCode::Char('r') => return Some(Effect::Rescan),
             code => match self.mode {
                 Mode::Explore => self.on_explore_key(code),
                 Mode::Suggest => self.on_suggest_key(code),
@@ -521,6 +524,23 @@ impl App {
         self.results = done.into_iter().map(|(_, r)| r).collect();
         self.freed = freed;
         self.screen = Screen::Result;
+    }
+
+    /// 重新掃描前清掉上一次的結果；標記指向舊樹的節點，一併清除
+    pub fn begin_rescan(&mut self, disk: Option<DiskInfo>, now: i64) {
+        self.disk = disk;
+        self.now = now;
+        self.progress = Progress::default();
+        self.tree = None;
+        self.errors.clear();
+        self.needs_fda = false;
+        self.suggestions.clear();
+        self.sugg_by_node.clear();
+        self.explore.clear();
+        self.suggest_cursor = 0;
+        self.marks.clear();
+        self.status = None;
+        self.last_progress_change = Instant::now();
     }
 
     pub fn on_execute_error(&mut self, msg: String) {
@@ -887,6 +907,31 @@ mod tests {
             elapsed: Duration::ZERO,
         }));
         assert!(!app.stalled_at(changed + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn r_rescans_and_clears_previous_results() {
+        let mut app = app_with(&[
+            ("Projects/web/package.json", 1),
+            ("Projects/web/node_modules/a/i.js", 100),
+        ]);
+        app.on_key(key(' '));
+        assert_eq!(app.marks.len(), 1);
+        assert!(matches!(app.on_key(key('r')), Some(Effect::Rescan)));
+        app.begin_rescan(None, 0);
+        assert!(app.tree.is_none());
+        assert!(app.marks.is_empty());
+        assert!(app.suggestions.is_empty());
+        assert!(app.explore.is_empty());
+        // 掃描中再按 r 不會重複觸發
+        assert!(app.on_key(key('r')).is_none());
+        app.on_scan_event(ScanEvent::Done(ScanResult {
+            tree: tree_from("/h", &[("a", 1)]),
+            errors: vec![],
+            elapsed: Duration::ZERO,
+        }));
+        assert!(app.tree.is_some());
+        assert_eq!(app.mode, Mode::Suggest);
     }
 
     #[test]
