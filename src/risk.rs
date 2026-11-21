@@ -1,6 +1,6 @@
 /// 風險等級決定處理方式：可重建 → 直接刪除；使用者資料 → 垃圾桶；
 /// 工具管理 → 執行官方指令；可移除的 git worktree → 再檢查後移到垃圾桶並 prune；
-/// 受保護 → 不可處理。
+/// Docker 的 volume / container → 確認後用 docker 指令移除（無法復原）；受保護 → 不可處理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Risk {
     Regenerable,
@@ -9,6 +9,8 @@ pub enum Risk {
     ToolManaged,
     /// 經 git 檢查可安全移除的 linked worktree
     Worktree,
+    /// Docker 裡沒有被使用、但刪了救不回的資料（匿名 volume、已停止的 container）
+    DockerData,
 }
 
 impl Risk {
@@ -19,6 +21,7 @@ impl Risk {
             Risk::Protected => "受保護",
             Risk::ToolManaged => "工具管理",
             Risk::Worktree => "worktree",
+            Risk::DockerData => "無法復原",
         }
     }
 }
@@ -45,6 +48,8 @@ pub enum Handling {
     Command(ToolCommand),
     /// 動手前再用 git 檢查一次，移到垃圾桶後在主 repo 執行 `git worktree prune`
     RemoveWorktree,
+    /// 動手前重查一次 Docker 狀態，再用 docker 指令逐個移除
+    Docker,
 }
 
 impl Handling {
@@ -54,6 +59,7 @@ impl Handling {
             Handling::Trash => "移到垃圾桶",
             Handling::Command(_) => "執行指令",
             Handling::RemoveWorktree => "移除 worktree",
+            Handling::Docker => "Docker 移除",
         }
     }
 }

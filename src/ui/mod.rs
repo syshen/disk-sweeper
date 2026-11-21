@@ -93,7 +93,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
 fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
     let mut info = vec![Span::raw(format!(
         " 已標記 {} 項 · {}",
-        app.marks.len(),
+        app.marked_count(),
         format_size(app.marked_total())
     ))];
     if !app.errors.is_empty() {
@@ -136,6 +136,7 @@ pub(crate) fn risk_style(r: Risk) -> Style {
         Risk::Protected => Color::Red,
         Risk::ToolManaged => Color::Cyan,
         Risk::Worktree => Color::Blue,
+        Risk::DockerData => Color::LightMagenta,
     })
 }
 
@@ -330,6 +331,7 @@ mod tests {
         let mut app = sample_app();
         let lib = find(app.tree.as_ref().unwrap(), "Library");
         app.confirm = Some(ConfirmState {
+            docker: vec![],
             items: vec![ConfirmItem {
                 node: lib,
                 risk: Risk::UserData,
@@ -399,10 +401,11 @@ mod tests {
             },
         });
         app.confirm = Some(ConfirmState {
+            docker: vec![],
             items,
             warnings: vec![
                 "Xcode 正在執行，建議先關閉再清理".into(),
-                "Docker Desktop 未執行，docker 指令會失敗".into(),
+                "Simulator 正在執行，建議先關閉再清理".into(),
             ],
             need_typed: true,
             input: String::new(),
@@ -475,6 +478,7 @@ mod tests {
         );
         assert!(matches!(verdict, Verdict::Approved(_)), "{verdict:?}");
         app.confirm = Some(ConfirmState {
+            docker: vec![],
             items: vec![ConfirmItem {
                 node,
                 risk: Risk::Regenerable,
@@ -588,6 +592,7 @@ mod tests {
             elapsed: Duration::ZERO,
         }));
         app.confirm = Some(ConfirmState {
+            docker: vec![],
             items: vec![],
             warnings: vec![],
             need_typed: false,
@@ -599,5 +604,89 @@ mod tests {
         let rendered = format!("{}", terminal.backend());
         assert!(rendered.contains("模擬模式"), "{rendered}");
         assert!(!rendered.contains("DRY-RUN"), "{rendered}");
+    }
+
+    // ── Docker ──
+
+    use crate::app::SuggestRow;
+    use crate::docker;
+    use crate::safety::{ApprovedDocker, DockerVerdict};
+
+    fn docker_sample_app() -> App {
+        let mut app = sample_app();
+        app.on_scan_event(ScanEvent::Docker(docker::Scan::Ready {
+            context: "orbstack".into(),
+            items: docker::classify(&docker::testutil::sample_json()).unwrap(),
+        }));
+        app.mode = Mode::Suggest;
+        app
+    }
+
+    #[test]
+    fn suggest_screen_with_docker_items() {
+        let mut app = docker_sample_app();
+        let vols = app
+            .docker_items()
+            .iter()
+            .position(|i| i.key() == "docker:volumes")
+            .unwrap();
+        app.docker_marks.insert(vols);
+        app.suggest_cursor = app
+            .suggest_rows()
+            .iter()
+            .position(|r| *r == SuggestRow::Docker(vols))
+            .unwrap();
+        let mut t = Terminal::new(TestBackend::new(110, 30)).unwrap();
+        t.draw(|f| draw(f, &app)).unwrap();
+        insta::assert_snapshot!(t.backend());
+    }
+
+    #[test]
+    fn suggest_screen_shows_why_docker_is_unavailable() {
+        let mut app = sample_app();
+        app.mode = Mode::Suggest;
+        app.expect_docker();
+        let text = format!("{}", render(&app).backend());
+        assert!(text.contains("Docker  0 項 · 0B  檢查中…"), "{text}");
+        app.on_scan_event(ScanEvent::Docker(docker::Scan::Unavailable(
+            "Docker 未啟動或無法連線".into(),
+        )));
+        let text = format!("{}", render(&app).backend());
+        assert!(
+            text.contains("Docker  0 項 · 0B  Docker 未啟動或無法連線"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn confirm_screen_with_docker_items() {
+        let mut app = docker_sample_app();
+        let docker: Vec<DockerVerdict> = app
+            .docker_items()
+            .iter()
+            .filter(|i| {
+                ["docker:volumes", "docker:image:alpine:latest"].contains(&i.key().as_str())
+            })
+            .map(|i| {
+                DockerVerdict::Approved(ApprovedDocker::for_test(
+                    i.clone(),
+                    Path::new("/usr/local/bin/docker"),
+                ))
+            })
+            .chain([DockerVerdict::Rejected {
+                label: "Build cache".into(),
+                reason: "找不到指令 `docker`".into(),
+            }])
+            .collect();
+        app.confirm = Some(ConfirmState {
+            items: vec![],
+            docker,
+            warnings: vec![],
+            need_typed: true,
+            input: "ye".into(),
+            scroll: 0,
+        });
+        app.screen = Screen::Confirm;
+        insta::assert_snapshot!(render(&app).backend());
     }
 }

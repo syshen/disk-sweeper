@@ -6,6 +6,7 @@ use ratatui::Frame;
 
 use super::{display_path, pad, risk_style};
 use crate::app::{App, SuggestRow};
+use crate::docker;
 use crate::rules::Category;
 use crate::size::format_size;
 
@@ -18,9 +19,33 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         .iter()
         .map(|row| match *row {
             SuggestRow::Header(cat) => {
-                let (count, total) = app.visible_items(cat).fold((0usize, 0u64), |(c, t), i| {
-                    (c + 1, t + app.suggestions[i].size)
-                });
+                let (mut count, mut total) =
+                    app.visible_items(cat).fold((0usize, 0u64), |(c, t), i| {
+                        (c + 1, t + app.suggestions[i].size)
+                    });
+                let mut label = cat.label().to_string();
+                let mut note = "";
+                if cat == Category::Worktree && app.worktrees_pending {
+                    note = "  檢查中…";
+                }
+                if cat == Category::Docker {
+                    // 總量只算可以移除的；具名 volume 只是列出來參考
+                    for i in app.visible_docker() {
+                        let item = &app.docker_items()[i];
+                        count += 1;
+                        if item.removable() {
+                            total += item.size;
+                        }
+                    }
+                    match &app.docker {
+                        Some(docker::Scan::Ready { context, .. }) => {
+                            label = format!("Docker（{context}）")
+                        }
+                        Some(docker::Scan::Unavailable(reason)) => note = reason,
+                        None if app.docker_pending => note = "檢查中…",
+                        None => {}
+                    }
+                }
                 let open = if app.expanded[cat as usize] {
                     "▾"
                 } else {
@@ -28,15 +53,25 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        format!("{open} {}", cat.label()),
+                        format!("{open} {label}"),
                         Style::default().add_modifier(Modifier::BOLD),
                     ),
                     Span::raw(format!("  {count} 項 · {}", format_size(total))),
-                    Span::raw(if cat == Category::Worktree && app.worktrees_pending {
-                        "  檢查中…"
-                    } else {
-                        ""
-                    }),
+                    Span::raw(format!("  {}", note.trim_start())),
+                ]))
+            }
+            SuggestRow::Docker(i) => {
+                let item = &app.docker_items()[i];
+                let mark = if app.docker_marks.contains(&i) {
+                    "✓"
+                } else {
+                    " "
+                };
+                ListItem::new(Line::from(vec![
+                    Span::raw(format!("   {mark} ")),
+                    Span::raw(pad(&item.label(), 56)),
+                    Span::raw(format!(" {:>7}  ", format_size(item.size))),
+                    Span::styled(item.risk.label(), risk_style(item.risk)),
                 ]))
             }
             SuggestRow::Item(i) => {
@@ -77,6 +112,18 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
             let mut lines = vec![Line::from(format!("{} · {}", s.rule_id, s.description))];
             if let Some(cmd) = s.command {
                 lines.push(Line::from(format!("官方指令：{}", cmd.display())));
+            }
+            lines
+        }
+        Some(SuggestRow::Docker(i)) => {
+            let item = &app.docker_items()[*i];
+            let mut lines = vec![Line::from(format!(
+                "{} · {}",
+                docker::RULE_ID,
+                item.description
+            ))];
+            if let Some((_, args)) = docker::commands(&item.object).first() {
+                lines.push(Line::from(format!("指令：docker {}", args.join(" "))));
             }
             lines
         }

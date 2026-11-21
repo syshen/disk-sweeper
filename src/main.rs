@@ -10,7 +10,8 @@ use ratatui::DefaultTerminal;
 use disk_sweeper::action::{self, journal::ActionLog, SystemTrash};
 use disk_sweeper::app::{App, Effect};
 use disk_sweeper::context::Context;
-use disk_sweeper::safety::{self, ApprovedTarget};
+use disk_sweeper::docker::{self, SystemDocker};
+use disk_sweeper::safety::{self, ApprovedDocker, ApprovedTarget};
 use disk_sweeper::scan::{self, ScanEvent, ScanOptions};
 use disk_sweeper::tree::NodeId;
 use disk_sweeper::worktree::{self, Worktree};
@@ -82,12 +83,32 @@ fn main() -> Result<()> {
                 );
             }
         }
+        let docker_bin = safety::find_in_path("docker", &ctx.path_var);
+        match docker::scan(docker_bin.as_deref(), &SystemDocker) {
+            docker::Scan::Ready { context, items } => {
+                for item in &items {
+                    let tag = if item.removable() {
+                        "可移除"
+                    } else {
+                        "保留"
+                    };
+                    println!(
+                        "[docker {context} {tag}] {} {} · {}",
+                        size::format_size(item.size),
+                        item.label(),
+                        item.description
+                    );
+                }
+            }
+            docker::Scan::Unavailable(reason) => println!("[docker] {reason}"),
+        }
         return Ok(());
     }
 
     let rx = spawn_scan(&root, &opts, &ctx);
     let now = chrono::Local::now().timestamp();
     let mut app = App::new(ctx, cli.dry_run, disk::disk_info(&root).ok(), now);
+    app.expect_docker();
     // ratatui::init 會安裝 panic hook，panic 時也會恢復終端機
     let mut terminal = ratatui::init();
     let res = run(&mut terminal, &mut app, rx, &root, &opts);
@@ -95,11 +116,20 @@ fn main() -> Result<()> {
     res
 }
 
-/// 背景掃描；完成後先送出 `Done`，再逐一用 git 檢查 worktree 候選、送出 `Worktrees`
+/// 背景掃描；完成後先送出 `Done`，再逐一用 git 檢查 worktree 候選、送出 `Worktrees`。
+/// 同時另開一個執行緒問 docker，查到就送出 `Docker`（通常比目錄掃描早完成）。
 fn spawn_scan(root: &Path, opts: &ScanOptions, ctx: &Context) -> mpsc::Receiver<ScanEvent> {
     let (tx, rx) = mpsc::channel();
     let (root, opts) = (root.to_path_buf(), opts.clone());
     let git = safety::find_in_path("git", &ctx.path_var);
+    let docker_bin = safety::find_in_path("docker", &ctx.path_var);
+    let docker_tx = tx.clone();
+    std::thread::spawn(move || {
+        let _ = docker_tx.send(ScanEvent::Docker(docker::scan(
+            docker_bin.as_deref(),
+            &SystemDocker,
+        )));
+    });
     std::thread::spawn(move || {
         let result = scan::scan(&root, &opts, &tx);
         let candidates: Vec<(NodeId, PathBuf)> = result
@@ -148,9 +178,9 @@ fn run(
             continue;
         }
         match app.on_key(key) {
-            Some(Effect::Execute(targets)) => {
+            Some(Effect::Execute(targets, docker)) => {
                 terminal.draw(|f| ui::draw(f, app))?; // 先畫出「執行中」
-                execute(app, targets, root);
+                execute(app, targets, docker, root);
                 // 清理期間按下的鍵都丟掉，免得一回來就把結果畫面關掉
                 while event::poll(Duration::ZERO)? {
                     let _ = event::read()?;
@@ -159,6 +189,7 @@ fn run(
             Some(Effect::Rescan) => {
                 let now = chrono::Local::now().timestamp();
                 app.begin_rescan(disk::disk_info(root).ok(), now);
+                app.expect_docker();
                 rx = spawn_scan(root, opts, &app.ctx);
             }
             None => {}
@@ -167,7 +198,12 @@ fn run(
     Ok(())
 }
 
-fn execute(app: &mut App, targets: Vec<(NodeId, ApprovedTarget)>, root: &Path) {
+fn execute(
+    app: &mut App,
+    targets: Vec<(NodeId, ApprovedTarget)>,
+    docker: Vec<ApprovedDocker>,
+    root: &Path,
+) {
     let mut log = match ActionLog::open(&app.ctx.log_dir()) {
         Ok(l) => Some(l),
         Err(_) if app.dry_run => None,
@@ -179,9 +215,15 @@ fn execute(app: &mut App, targets: Vec<(NodeId, ApprovedTarget)>, root: &Path) {
     let before = disk::disk_info(root).ok();
     let (ids, approved): (Vec<NodeId>, Vec<ApprovedTarget>) = targets.into_iter().unzip();
     let results = action::execute(&approved, app.dry_run, log.as_mut(), &SystemTrash);
+    let docker_results = action::execute_docker(&docker, app.dry_run, log.as_mut(), &SystemDocker);
+    let docker_done = docker
+        .iter()
+        .map(|t| t.item().key())
+        .zip(docker_results)
+        .collect();
     let after = disk::disk_info(root).ok();
     let freed = before
         .zip(after)
         .map(|(b, a)| a.free as i64 - b.free as i64);
-    app.on_executed(ids.into_iter().zip(results).collect(), freed);
+    app.on_executed(ids.into_iter().zip(results).collect(), docker_done, freed);
 }

@@ -8,7 +8,7 @@ use super::{display_path, pad, popup, risk_style, wrap_to_width};
 use crate::app::{App, ConfirmItem};
 use crate::risk::Handling;
 use crate::rules::CATALOG;
-use crate::safety::Verdict;
+use crate::safety::{DockerVerdict, Verdict};
 use crate::size::format_size;
 
 /// 路徑、說明與拒絕原因的縮排
@@ -73,6 +73,43 @@ fn item_lines(item: &ConfirmItem, app: &App, width: usize) -> Vec<Line<'static>>
     }
 }
 
+/// Docker 項目：格式和路徑項目相同，路徑那一行改成項目名稱
+fn docker_lines(verdict: &DockerVerdict, width: usize) -> Vec<Line<'static>> {
+    let dim = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
+    match verdict {
+        DockerVerdict::Approved(t) => {
+            let item = t.item();
+            let mut lines = vec![Line::from(vec![
+                Span::styled(" ✓ ", Style::default().fg(Color::Green)),
+                Span::styled(pad(item.risk.label(), 10), risk_style(item.risk)),
+                Span::raw(format!(
+                    " {} {:>7}",
+                    pad(Handling::Docker.label(), 12),
+                    format_size(item.size)
+                )),
+            ])];
+            lines.extend(wrapped(&item.label(), width, Style::default()));
+            lines.extend(wrapped(&item.description, width, dim));
+            lines
+        }
+        DockerVerdict::Rejected { label, reason } => {
+            let red = Style::default().fg(Color::Red);
+            let mut lines = Vec::new();
+            for (i, seg) in wrap_to_width(&format!("略過：{reason}"), width.saturating_sub(3))
+                .into_iter()
+                .enumerate()
+            {
+                let lead = if i == 0 { " ✗ " } else { "   " };
+                lines.push(Line::from(Span::styled(format!("{lead}{seg}"), red)));
+            }
+            lines.extend(wrapped(label, width, red));
+            lines
+        }
+    }
+}
+
 pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     let Some(state) = &app.confirm else { return };
     let rect = popup(area, 90, 80);
@@ -93,17 +130,29 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
             total += t.size();
         }
     }
+    for verdict in &state.docker {
+        if let DockerVerdict::Approved(t) = verdict {
+            count += 1;
+            total += t.item().size;
+        }
+    }
 
     // 底部固定區：捲動提示（或空行）、摘要、所有警告、提示輸入——永遠不會被裁掉
     let bottom_h = (3 + state.warnings.len() as u16).min(inner.height);
     let list_h = inner.height - bottom_h;
 
-    let n = state.items.len();
+    let width = inner.width as usize;
+    let all: Vec<Vec<Line>> = state
+        .items
+        .iter()
+        .map(|item| item_lines(item, app, width))
+        .chain(state.docker.iter().map(|v| docker_lines(v, width)))
+        .collect();
+    let n = all.len();
     let start = state.scroll.min(n.saturating_sub(1));
     let mut lines: Vec<Line> = Vec::new();
     let mut end = start;
-    for item in &state.items[start.min(n)..] {
-        let il = item_lines(item, app, inner.width as usize);
+    for il in all.into_iter().skip(start) {
         if lines.len() + il.len() > list_h as usize {
             // 第一個項目就比清單區還高時，仍畫出放得下的部分，避免畫面空白
             if end == start {

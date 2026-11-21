@@ -13,14 +13,17 @@ use crate::tree::{NodeId, NodeKind, Tree};
 pub enum Category {
     DevTools,
     Worktree,
+    /// Docker 物件不是路徑：項目由 `docker` 模組提供，不經過規則比對
+    Docker,
     AppCache,
     LargeFiles,
 }
 
 impl Category {
-    pub const ALL: [Category; 4] = [
+    pub const ALL: [Category; 5] = [
         Category::DevTools,
         Category::Worktree,
+        Category::Docker,
         Category::AppCache,
         Category::LargeFiles,
     ];
@@ -29,6 +32,7 @@ impl Category {
         match self {
             Category::DevTools => "開發工具",
             Category::Worktree => "Git worktree",
+            Category::Docker => "Docker",
             Category::AppCache => "系統與 App cache",
             Category::LargeFiles => "大型使用者檔案",
         }

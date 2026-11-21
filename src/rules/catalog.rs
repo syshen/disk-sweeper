@@ -159,11 +159,8 @@ pub static CATALOG: &[Rule] = &[
         category: DevTools,
         risk: ToolManaged,
         matcher: Exact(&["Library/Containers/com.docker.docker"]),
-        command: Some(ToolCommand {
-            program: "docker",
-            args: &["system", "prune", "-f"],
-        }),
-        description: "Docker Desktop 的 VM 磁碟映像（直接刪檔會失去所有 image 與 volume）；官方指令會刪除所有已停止的 container、未使用的 network、dangling image 與 build cache（需先開啟 Docker Desktop）",
+        command: None,
+        description: "Docker Desktop 的 VM 磁碟映像（直接刪檔會失去所有 image 與 volume）；裡面沒在用的 image、volume、container 與 build cache 列在「Docker」類別（Docker Desktop 要開著，且是目前的 docker context）",
     },
     Rule {
         id: "orbstack",
