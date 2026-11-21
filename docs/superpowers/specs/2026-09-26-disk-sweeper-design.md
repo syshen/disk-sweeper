@@ -120,7 +120,7 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 
 - 標記後、確認前路徑已消失 → 確認畫面顯示為「略過（路徑不存在）」，不會執行
 - 確認後、執行前重新 `lstat`：已消失 → Skipped「已不存在」；`dev`、`inode` 或 `mtime` 與審核／掃描時不同 → Skipped「掃描後已變動」
-- 相關 app 狀態（以 `pgrep -x` 檢查程序名稱）→ 在確認畫面顯示警告：直接刪檔的規則在 Xcode、Simulator 執行中時建議先關閉；用官方指令清理的 Docker 則相反，Docker Desktop 未執行時警告「docker 指令會失敗」
+- 相關 app 狀態（以 `pgrep -x` 檢查程序名稱）→ 在確認畫面顯示警告：直接刪檔的規則在 Xcode、Simulator 執行中時建議先關閉
 - 確認畫面列出每一項的風險等級（彩色）、處理方式、大小、路徑，以及規則說明（第二行）；清單可用 ↑↓ / PgUp / PgDn 捲動，放不下時顯示「第 a–b 項，共 N 項」；摘要、所有警告與輸入提示固定在底部，不會被裁掉
 - 包含任何 🟡 項目或總量 > 10 GB → 需輸入 `yes` 再按 Enter；否則只有按 `y` 會執行（Enter 不會）
 - `--dry-run`：流程完整，但 `action` 不做任何檔案系統變更，結果標示為 dry-run
@@ -158,7 +158,7 @@ Explore 模式手動標記的項目：若比對到 🟢 規則則沿用，否則
 | `gradle-cache` | `.gradle/caches` | 🟢 |
 | `pip-cache` | `Library/Caches/pip` | 🟢 |
 | `xdg-cache` | `.cache/*` | 🟢 |
-| `docker` | `Library/Containers/com.docker.docker` | ⚙ `docker system prune` |
+| `docker` | `Library/Containers/com.docker.docker` | ⚙ 只顯示說明（逐項清理見 [Docker 設計文件](2026-11-21-docker-cleanup-design.md)） |
 | `orbstack` | `.orbstack` / `Library/Group Containers/*.orbstack` | ⚙ 顯示大小與建議，不提供自動指令 |
 
 ⚙ 項目：只有在指令存在於 `$PATH` 時才提供「執行」選項；執行前顯示完整指令並需確認；stdout/stderr 顯示在結果畫面。

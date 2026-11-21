@@ -2,6 +2,7 @@ pub mod action;
 pub mod app;
 pub mod context;
 pub mod disk;
+pub mod docker;
 pub mod risk;
 pub mod rules;
 pub mod safety;

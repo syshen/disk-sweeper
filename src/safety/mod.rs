@@ -11,6 +11,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
 use crate::context::Context;
+use crate::docker;
 use crate::risk::{Handling, Risk, ToolCommand};
 
 #[derive(Debug, Clone)]
@@ -96,6 +97,70 @@ pub fn review(c: Candidate, ctx: &Context) -> Verdict {
     }
 }
 
+/// 通過審核的 Docker 項目。和 `ApprovedTarget` 一樣欄位私有，只能由 `review_docker` 建立，
+/// `action::execute_docker` 只接受這個型別。
+#[derive(Debug)]
+pub struct ApprovedDocker {
+    item: docker::Item,
+    /// 審核當下在 PATH 找到的 docker 絕對路徑
+    program: PathBuf,
+}
+
+impl ApprovedDocker {
+    pub fn item(&self) -> &docker::Item {
+        &self.item
+    }
+    pub fn program(&self) -> &Path {
+        &self.program
+    }
+
+    /// 測試專用：跳過 PATH 查找，直接指定 docker 路徑（仍然只在本 crate 的測試可用）
+    #[cfg(test)]
+    pub(crate) fn for_test(item: docker::Item, program: &Path) -> Self {
+        Self {
+            item,
+            program: program.to_path_buf(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum DockerVerdict {
+    Approved(ApprovedDocker),
+    Rejected { label: String, reason: String },
+}
+
+/// Docker 項目的關卡：只放行分級為可移除、名稱可以安全放進指令列的項目。
+pub fn review_docker(item: docker::Item, ctx: &Context) -> DockerVerdict {
+    match check_docker(&item, ctx) {
+        Ok(program) => DockerVerdict::Approved(ApprovedDocker { item, program }),
+        Err(reason) => DockerVerdict::Rejected {
+            label: item.label(),
+            reason,
+        },
+    }
+}
+
+fn check_docker(item: &docker::Item, ctx: &Context) -> Result<PathBuf, String> {
+    match item.risk {
+        Risk::Regenerable | Risk::DockerData => {}
+        Risk::Protected => return Err("受保護的項目".into()),
+        Risk::UserData | Risk::ToolManaged | Risk::Worktree => {
+            return Err("不是可移除的 Docker 項目".into())
+        }
+    }
+    if docker::commands(&item.object).is_empty() {
+        return Err("此項目沒有可自動執行的移除指令".into());
+    }
+    if let Some(bad) = docker::names(&item.object)
+        .into_iter()
+        .find(|n| !docker::valid_name(n))
+    {
+        return Err(format!("名稱含有不允許的字元：{bad}"));
+    }
+    find_in_path("docker", &ctx.path_var).ok_or_else(|| "找不到指令 `docker`".to_string())
+}
+
 struct Checked {
     path: PathBuf,
     handling: Handling,
@@ -123,6 +188,8 @@ fn check(c: &Candidate, ctx: &Context) -> Result<Checked, String> {
     let mut program_path = None;
     let handling = match c.risk {
         Risk::Protected => return Err("受保護的項目".into()),
+        // Docker 物件不是路徑，只能走 `review_docker`
+        Risk::DockerData => return Err("Docker 項目必須經過 Docker 檢查".into()),
         Risk::Worktree => {
             if c.rule_id != Some(crate::worktree::RULE_ID) {
                 return Err("worktree 必須經過 git 檢查".into());
@@ -680,5 +747,124 @@ mod tests {
                 prop_assert!(rejected(&v));
             }
         }
+    }
+
+    fn docker_item(object: docker::Object, risk: Risk) -> docker::Item {
+        docker::Item {
+            object,
+            size: 1,
+            full_size: 1,
+            risk,
+            description: String::new(),
+        }
+    }
+
+    /// PATH 裡有一個假的 `docker` 執行檔
+    fn ctx_with_docker() -> (TempDir, Context) {
+        let (d, mut ctx) = setup();
+        let bin = d.path().join("bin/docker");
+        fs::write(&bin, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        ctx.path_var = d.path().join("bin").into_os_string();
+        (d, ctx)
+    }
+
+    fn docker_reason(v: DockerVerdict) -> String {
+        match v {
+            DockerVerdict::Rejected { reason, .. } => reason,
+            DockerVerdict::Approved(_) => panic!("expected rejection"),
+        }
+    }
+
+    #[test]
+    fn docker_review_approves_removable_items_with_resolved_program() {
+        let (_d, ctx) = ctx_with_docker();
+        let vols = docker::Object::AnonVolumes {
+            names: vec!["a".repeat(64)],
+        };
+        match review_docker(docker_item(vols.clone(), Risk::DockerData), &ctx) {
+            DockerVerdict::Approved(t) => {
+                assert_eq!(t.item().object, vols);
+                assert!(t.program().is_absolute());
+                assert!(t.program().ends_with("bin/docker"));
+            }
+            DockerVerdict::Rejected { reason, .. } => panic!("{reason}"),
+        }
+        assert!(matches!(
+            review_docker(
+                docker_item(docker::Object::BuildCache, Risk::Regenerable),
+                &ctx
+            ),
+            DockerVerdict::Approved(_)
+        ));
+    }
+
+    #[test]
+    fn docker_review_rejects_protected_and_misclassified_items() {
+        let (_d, ctx) = ctx_with_docker();
+        let named = docker::Object::NamedVolume { name: "db".into() };
+        assert_eq!(
+            docker_reason(review_docker(
+                docker_item(named.clone(), Risk::Protected),
+                &ctx
+            )),
+            "受保護的項目"
+        );
+        // 就算分級被寫錯，具名 volume 沒有移除指令，一樣過不了
+        assert!(matches!(
+            review_docker(docker_item(named, Risk::DockerData), &ctx),
+            DockerVerdict::Rejected { .. }
+        ));
+        assert!(matches!(
+            review_docker(
+                docker_item(docker::Object::BuildCache, Risk::UserData),
+                &ctx
+            ),
+            DockerVerdict::Rejected { .. }
+        ));
+    }
+
+    #[test]
+    fn docker_review_rejects_names_that_could_be_options() {
+        let (_d, ctx) = ctx_with_docker();
+        for bad in ["-f", "--all", "a b", "x;rm"] {
+            let img = docker::Object::Image {
+                reference: bad.into(),
+            };
+            let reason = docker_reason(review_docker(docker_item(img, Risk::Regenerable), &ctx));
+            assert!(reason.contains("不允許的字元"), "{bad}: {reason}");
+            let vols = docker::Object::AnonVolumes {
+                names: vec!["ok".into(), bad.into()],
+            };
+            assert!(matches!(
+                review_docker(docker_item(vols, Risk::DockerData), &ctx),
+                DockerVerdict::Rejected { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn docker_review_rejects_when_docker_is_not_in_path() {
+        let (_d, ctx) = setup();
+        let reason = docker_reason(review_docker(
+            docker_item(docker::Object::BuildCache, Risk::Regenerable),
+            &ctx,
+        ));
+        assert_eq!(reason, "找不到指令 `docker`");
+    }
+
+    #[test]
+    fn docker_data_risk_cannot_go_through_the_path_gate() {
+        let (_d, ctx) = setup();
+        let c = Candidate {
+            path: ctx.home.join("Library/Caches/com.example"),
+            risk: Risk::DockerData,
+            rule_id: Some(docker::RULE_ID),
+            command: None,
+            size: 0,
+            inode: 0,
+            mtime: 0,
+        };
+        assert!(matches!(review(c, &ctx), Verdict::Rejected { .. }));
     }
 }

@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -7,9 +7,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::action::{procs, ActionResult, Outcome};
 use crate::context::Context;
 use crate::disk::DiskInfo;
+use crate::docker;
 use crate::risk::{Handling, Risk, ToolCommand};
 use crate::rules::{self, Category, Suggestion};
-use crate::safety::{self, ApprovedTarget, Candidate, Verdict};
+use crate::safety::{self, ApprovedDocker, ApprovedTarget, Candidate, DockerVerdict, Verdict};
 use crate::scan::{self, Progress, ScanError, ScanEvent};
 use crate::tree::{NodeId, Tree};
 use crate::worktree::{self, Worktree};
@@ -55,6 +56,8 @@ pub struct ConfirmItem {
 #[derive(Debug)]
 pub struct ConfirmState {
     pub items: Vec<ConfirmItem>,
+    /// 標記的 Docker 項目（排在路徑項目之後）
+    pub docker: Vec<DockerVerdict>,
     pub warnings: Vec<String>,
     pub need_typed: bool,
     pub input: String,
@@ -66,10 +69,12 @@ pub struct ConfirmState {
 pub enum SuggestRow {
     Header(Category),
     Item(usize),
+    /// `App::docker_items()` 的索引
+    Docker(usize),
 }
 
 pub enum Effect {
-    Execute(Vec<(NodeId, ApprovedTarget)>),
+    Execute(Vec<(NodeId, ApprovedTarget)>, Vec<ApprovedDocker>),
     /// 重新掃描：呼叫端要啟動新的掃描執行緒，並呼叫 `App::begin_rescan`
     Rescan,
 }
@@ -86,6 +91,11 @@ pub struct App {
     pub worktrees: Vec<Worktree>,
     /// 掃描完成、git worktree 還在檢查中
     pub worktrees_pending: bool,
+    /// 向 docker 查詢的結果；還沒查完或沒查是 None
+    pub docker: Option<docker::Scan>,
+    pub docker_pending: bool,
+    /// 已標記的 Docker 項目（`docker_items()` 的索引）
+    pub docker_marks: BTreeSet<usize>,
     sugg_by_node: HashMap<NodeId, usize>,
     pub mode: Mode,
     pub screen: Screen,
@@ -118,6 +128,9 @@ impl App {
             suggestions: Vec::new(),
             worktrees: Vec::new(),
             worktrees_pending: false,
+            docker: None,
+            docker_pending: false,
+            docker_marks: BTreeSet::new(),
             sugg_by_node: HashMap::new(),
             mode: Mode::Explore,
             screen: Screen::Main,
@@ -156,6 +169,12 @@ impl App {
                 // 掃描完成先顯示清理建議；Tab 可切回 Explore
                 self.mode = Mode::Suggest;
                 self.suggest_cursor = 0;
+            }
+            ScanEvent::Docker(scan) => {
+                self.docker = Some(scan);
+                self.docker_pending = false;
+                self.docker_marks.clear();
+                self.clamp_suggest_cursor();
             }
             ScanEvent::Worktrees(wts) => {
                 self.worktrees = wts;
@@ -241,15 +260,53 @@ impl App {
             rows.push(SuggestRow::Header(cat));
             if self.expanded[cat as usize] {
                 rows.extend(self.visible_items(cat).map(SuggestRow::Item));
+                if cat == Category::Docker {
+                    rows.extend(self.visible_docker().map(SuggestRow::Docker));
+                }
             }
         }
         rows
     }
 
+    /// 呼叫端已啟動 docker 查詢：結果送到之前，Docker 類別顯示「檢查中」
+    pub fn expect_docker(&mut self) {
+        self.docker_pending = true;
+    }
+
+    pub fn docker_items(&self) -> &[docker::Item] {
+        match &self.docker {
+            Some(docker::Scan::Ready { items, .. }) => items,
+            _ => &[],
+        }
+    }
+
+    /// 要顯示的 Docker 項目。小項目以完整大小判斷：獨占部分很小、
+    /// 但和其他 image 共用很大的 image 不該被藏起來。
+    pub fn visible_docker(&self) -> impl Iterator<Item = usize> + '_ {
+        self.docker_items()
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| self.show_small || i.full_size >= SMALL_ITEM)
+            .map(|(i, _)| i)
+    }
+
+    pub fn marked_count(&self) -> usize {
+        self.marks.len() + self.docker_marks.len()
+    }
+
     pub fn marked_total(&self) -> u64 {
-        self.tree
+        let paths: u64 = self
+            .tree
             .as_ref()
-            .map_or(0, |t| self.marks.keys().map(|&id| t.node(id).size).sum())
+            .map_or(0, |t| self.marks.keys().map(|&id| t.node(id).size).sum());
+        let items = self.docker_items();
+        paths
+            + self
+                .docker_marks
+                .iter()
+                .filter_map(|&i| items.get(i))
+                .map(|i| i.size)
+                .sum::<u64>()
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Effect> {
@@ -360,6 +417,7 @@ impl App {
                     let node = self.suggestions[*i].node;
                     self.toggle_mark(node);
                 }
+                Some(SuggestRow::Docker(i)) => self.toggle_docker_mark(*i),
                 None => {}
             },
             KeyCode::Char('a') => {
@@ -375,7 +433,46 @@ impl App {
         self.suggest_cursor = self.suggest_cursor.min(n.saturating_sub(1));
     }
 
+    fn toggle_docker_mark(&mut self, i: usize) {
+        if self.docker_marks.remove(&i) {
+            return;
+        }
+        match self.docker_items().get(i) {
+            Some(item) if item.removable() => {
+                self.docker_marks.insert(i);
+            }
+            Some(item) => self.status = Some(format!("無法標記：{}", item.description)),
+            None => {}
+        }
+    }
+
+    /// 整組標記只選可重建的項目；刪了救不回的 Docker 資料必須逐列標記
+    fn toggle_docker_group(&mut self) {
+        let items = self.docker_items();
+        let regen: Vec<usize> = self
+            .visible_docker()
+            .filter(|&i| items[i].risk == Risk::Regenerable)
+            .collect();
+        if regen.is_empty() {
+            if items.iter().any(|i| i.removable()) {
+                self.status = Some("volume 與 container 刪除後無法復原，請逐列標記".into());
+            }
+            return;
+        }
+        if regen.iter().all(|i| self.docker_marks.contains(i)) {
+            for i in regen {
+                self.docker_marks.remove(&i);
+            }
+        } else {
+            self.docker_marks.extend(regen);
+        }
+    }
+
     fn toggle_group(&mut self, cat: Category) {
+        if cat == Category::Docker {
+            self.toggle_docker_group();
+            return;
+        }
         let nodes: Vec<NodeId> = self
             .visible_items(cat)
             .filter(|&i| self.suggestions[i].risk != Risk::Protected)
@@ -442,10 +539,24 @@ impl App {
 
     fn begin_confirm(&mut self) {
         let Some(tree) = &self.tree else { return };
-        if self.marks.is_empty() {
+        if self.marks.is_empty() && self.docker_marks.is_empty() {
             self.status = Some("尚未標記任何項目".into());
             return;
         }
+        let docker: Vec<DockerVerdict> = self
+            .docker_marks
+            .iter()
+            .filter_map(|&i| self.docker_items().get(i))
+            .map(|item| safety::review_docker(item.clone(), &self.ctx))
+            .collect();
+        let docker_approved = || {
+            docker.iter().filter_map(|v| match v {
+                DockerVerdict::Approved(t) => Some(t.item()),
+                DockerVerdict::Rejected { .. } => None,
+            })
+        };
+        let docker_total: u64 = docker_approved().map(|i| i.size).sum();
+        let docker_data = docker_approved().any(|i| i.risk == Risk::DockerData);
         let items: Vec<ConfirmItem> = self
             .marks
             .iter()
@@ -474,14 +585,16 @@ impl App {
                 Verdict::Rejected { .. } => None,
             })
             .collect();
-        let total: u64 = approved.iter().map(|t| t.size()).sum();
+        let total: u64 = approved.iter().map(|t| t.size()).sum::<u64>() + docker_total;
         let need_typed = total > TYPED_CONFIRM_THRESHOLD
+            || docker_data
             || approved
                 .iter()
                 .any(|t| matches!(t.handling(), Handling::Trash | Handling::RemoveWorktree));
         let warnings = procs::running_app_warnings(approved.iter().filter_map(|t| t.rule_id()));
         self.confirm = Some(ConfirmState {
             items,
+            docker,
             warnings,
             need_typed,
             input: String::new(),
@@ -497,7 +610,7 @@ impl App {
             return None;
         }
         // 捲動只用方向鍵與 PgUp / PgDn：需要輸入 yes 時 j / k 是輸入的字元
-        let last = state.items.len().saturating_sub(1);
+        let last = (state.items.len() + state.docker.len()).saturating_sub(1);
         let scroll = match key.code {
             KeyCode::Down => Some((state.scroll + 1).min(last)),
             KeyCode::Up => Some(state.scroll.saturating_sub(1)),
@@ -549,16 +662,39 @@ impl App {
                 Verdict::Rejected { .. } => None,
             })
             .collect();
-        if targets.is_empty() {
+        let docker: Vec<ApprovedDocker> = state
+            .docker
+            .into_iter()
+            .filter_map(|v| match v {
+                DockerVerdict::Approved(t) => Some(t),
+                DockerVerdict::Rejected { .. } => None,
+            })
+            .collect();
+        if targets.is_empty() && docker.is_empty() {
             self.status = Some("沒有可執行的項目".into());
             self.screen = Screen::Main;
             return None;
         }
         self.screen = Screen::Running;
-        Some(Effect::Execute(targets))
+        Some(Effect::Execute(targets, docker))
     }
 
-    pub fn on_executed(&mut self, done: Vec<(NodeId, ActionResult)>, freed: Option<i64>) {
+    /// `docker_done` 的字串是 `docker::Item::key()`
+    pub fn on_executed(
+        &mut self,
+        done: Vec<(NodeId, ActionResult)>,
+        docker_done: Vec<(String, ActionResult)>,
+        freed: Option<i64>,
+    ) {
+        // 移除成功的 Docker 項目不再列出；部分失敗的留著，重新掃描後才會更新
+        if let Some(docker::Scan::Ready { items, .. }) = &mut self.docker {
+            items.retain(|i| {
+                !docker_done
+                    .iter()
+                    .any(|(key, r)| r.outcome == Outcome::Done && *key == i.key())
+            });
+        }
+        self.docker_marks.clear();
         if let Some(tree) = &mut self.tree {
             for (id, r) in &done {
                 if r.outcome == Outcome::Done && !matches!(r.handling, Handling::Command(_)) {
@@ -576,7 +712,11 @@ impl App {
         self.marks.clear();
         self.suggest_cursor = 0;
         self.refresh_suggestions();
-        self.results = done.into_iter().map(|(_, r)| r).collect();
+        self.results = done
+            .into_iter()
+            .map(|(_, r)| r)
+            .chain(docker_done.into_iter().map(|(_, r)| r))
+            .collect();
         self.freed = freed;
         self.screen = Screen::Result;
     }
@@ -592,6 +732,9 @@ impl App {
         self.suggestions.clear();
         self.worktrees.clear();
         self.worktrees_pending = false;
+        self.docker = None;
+        self.docker_pending = false;
+        self.docker_marks.clear();
         self.sugg_by_node.clear();
         self.explore.clear();
         self.suggest_cursor = 0;
@@ -821,7 +964,7 @@ mod tests {
         assert!(app.on_key(code(KeyCode::Enter)).is_none());
         assert_eq!(app.screen, Screen::Confirm);
         typed(&mut app, "yes");
-        let Some(Effect::Execute(targets)) = app.on_key(code(KeyCode::Enter)) else {
+        let Some(Effect::Execute(targets, _)) = app.on_key(code(KeyCode::Enter)) else {
             panic!("no effect")
         };
         assert_eq!(targets.len(), 1);
@@ -849,7 +992,7 @@ mod tests {
         assert!(!app.confirm.as_ref().unwrap().need_typed);
         assert!(app.on_key(code(KeyCode::Enter)).is_none()); // 只有 y 會執行
         assert_eq!(app.screen, Screen::Confirm);
-        let Some(Effect::Execute(targets)) = app.on_key(key('y')) else {
+        let Some(Effect::Execute(targets, _)) = app.on_key(key('y')) else {
             panic!("no effect")
         };
         let (id, target) = &targets[0];
@@ -861,7 +1004,7 @@ mod tests {
             outcome: Outcome::Done,
             output: None,
         };
-        app.on_executed(vec![(*id, result)], Some(4096));
+        app.on_executed(vec![(*id, result)], vec![], Some(4096));
         let tree = app.tree.as_ref().unwrap();
         assert_eq!(tree.node(tree.root()).size, root_before - removed);
         assert!(app.suggestions.is_empty());
@@ -1070,7 +1213,7 @@ mod tests {
             outcome: Outcome::Done,
             output: None,
         };
-        app.on_executed(vec![(wt, result)], None);
+        app.on_executed(vec![(wt, result)], vec![], None);
         assert!(app.suggestions.is_empty());
         assert!(app.worktrees.is_empty());
     }
@@ -1087,5 +1230,192 @@ mod tests {
         assert_eq!(app.screen, Screen::Main);
         assert!(app.confirm.is_none());
         assert_eq!(app.marks.len(), 1);
+    }
+
+    // ── Docker ──
+
+    use crate::docker::testutil::sample_json;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// 假樹 + 樣本 Docker 項目；PATH 指向含有假 `docker` 執行檔的暫存目錄
+    fn docker_app(bin: &Path) -> App {
+        let exe = bin.join("docker");
+        fs::write(&exe, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut app = app_with(&[("Movies/raw.mov", 2 << 30)]);
+        app.ctx.path_var = bin.as_os_str().to_owned();
+        app.expect_docker();
+        app.on_scan_event(ScanEvent::Docker(docker::Scan::Ready {
+            context: "orbstack".into(),
+            items: docker::classify(&sample_json()).unwrap(),
+        }));
+        app.mode = Mode::Suggest;
+        app
+    }
+
+    fn docker_index(app: &App, key: &str) -> usize {
+        app.docker_items()
+            .iter()
+            .position(|i| i.key() == key)
+            .unwrap_or_else(|| panic!("no docker item {key}"))
+    }
+
+    fn select_docker(app: &mut App, key: &str) -> usize {
+        let i = docker_index(app, key);
+        app.suggest_cursor = app
+            .suggest_rows()
+            .iter()
+            .position(|r| *r == SuggestRow::Docker(i))
+            .unwrap_or_else(|| panic!("{key} is not visible"));
+        i
+    }
+
+    fn docker_rows(app: &App) -> usize {
+        app.suggest_rows()
+            .iter()
+            .filter(|r| matches!(r, SuggestRow::Docker(_)))
+            .count()
+    }
+
+    #[test]
+    fn docker_items_are_listed_and_small_ones_hidden_by_full_size() {
+        let bin = tempfile::tempdir().unwrap();
+        let mut app = docker_app(bin.path());
+        assert!(!app.docker_pending);
+        // 已停止的 container 只有 197kB，預設隱藏；dangling image 獨占 21kB 但完整 2.89GB，要顯示
+        assert_eq!(docker_rows(&app), 5);
+        select_docker(
+            &mut app,
+            "docker:image:sha256:7d0892fcd348a5e05ab9c26fdbc5259af8db38b60018b8dc75b832796aa741cf",
+        );
+        app.on_key(key('a'));
+        assert_eq!(docker_rows(&app), 6);
+    }
+
+    #[test]
+    fn protected_docker_items_cannot_be_marked() {
+        let bin = tempfile::tempdir().unwrap();
+        let mut app = docker_app(bin.path());
+        select_docker(&mut app, "docker:volume:odoo-demo_odoo19-db");
+        app.on_key(key(' '));
+        assert!(app.docker_marks.is_empty());
+        assert!(app.status.as_deref().unwrap().starts_with("無法標記"));
+    }
+
+    #[test]
+    fn docker_header_marks_only_regenerable_items() {
+        let bin = tempfile::tempdir().unwrap();
+        let mut app = docker_app(bin.path());
+        app.suggest_cursor = app
+            .suggest_rows()
+            .iter()
+            .position(|r| *r == SuggestRow::Header(Category::Docker))
+            .unwrap();
+        app.on_key(key(' '));
+        let marked: Vec<Risk> = app
+            .docker_marks
+            .iter()
+            .map(|&i| app.docker_items()[i].risk)
+            .collect();
+        // dangling image、build cache、alpine；匿名 volume 與具名 volume 都不會被整組標記
+        assert_eq!(marked, [Risk::Regenerable; 3]);
+        assert_eq!(app.marked_count(), 3);
+        assert_eq!(app.marked_total(), 21_400 + 300_000_000 + 14_560_000);
+        app.on_key(key(' '));
+        assert!(app.docker_marks.is_empty());
+    }
+
+    #[test]
+    fn docker_data_requires_typed_yes_and_regenerable_does_not() {
+        let bin = tempfile::tempdir().unwrap();
+        let mut app = docker_app(bin.path());
+        select_docker(&mut app, "docker:image:alpine:latest");
+        app.on_key(key(' '));
+        app.on_key(key('d'));
+        assert_eq!(app.screen, Screen::Confirm);
+        let state = app.confirm.as_ref().unwrap();
+        assert!(state.items.is_empty());
+        assert!(matches!(state.docker[..], [DockerVerdict::Approved(_)]));
+        assert!(!state.need_typed);
+        app.on_key(code(KeyCode::Esc));
+
+        let vols = select_docker(&mut app, "docker:volumes");
+        app.on_key(key(' '));
+        assert!(app.docker_marks.contains(&vols));
+        app.on_key(key('d'));
+        assert!(app.confirm.as_ref().unwrap().need_typed);
+        assert!(app.on_key(key('y')).is_none(), "y 不夠，必須輸入 yes");
+        app.on_key(code(KeyCode::Backspace));
+        typed(&mut app, "yes");
+        let Some(Effect::Execute(targets, docker)) = app.on_key(code(KeyCode::Enter)) else {
+            panic!("expected execute effect");
+        };
+        assert!(targets.is_empty());
+        let keys: Vec<String> = docker.iter().map(|t| t.item().key()).collect();
+        assert_eq!(keys, ["docker:volumes", "docker:image:alpine:latest"]);
+        assert_eq!(app.screen, Screen::Running);
+    }
+
+    #[test]
+    fn docker_items_are_rejected_at_confirm_when_docker_is_missing() {
+        let bin = tempfile::tempdir().unwrap();
+        let mut app = docker_app(bin.path());
+        fs::remove_file(bin.path().join("docker")).unwrap();
+        select_docker(&mut app, "docker:image:alpine:latest");
+        app.on_key(key(' '));
+        app.on_key(key('d'));
+        assert!(matches!(
+            app.confirm.as_ref().unwrap().docker[..],
+            [DockerVerdict::Rejected { .. }]
+        ));
+        assert!(app.on_key(key('y')).is_none());
+        assert_eq!(app.status.as_deref(), Some("沒有可執行的項目"));
+    }
+
+    #[test]
+    fn removed_docker_items_disappear_and_rescan_clears_docker_state() {
+        let bin = tempfile::tempdir().unwrap();
+        let mut app = docker_app(bin.path());
+        let before = app.docker_items().len();
+        let alpine = select_docker(&mut app, "docker:image:alpine:latest");
+        app.on_key(key(' '));
+        let result = |outcome| ActionResult {
+            path: PathBuf::from("x"),
+            size: 1,
+            handling: Handling::Docker,
+            outcome,
+            output: None,
+        };
+        app.on_executed(
+            vec![],
+            vec![
+                ("docker:image:alpine:latest".into(), result(Outcome::Done)),
+                ("docker:volumes".into(), result(Outcome::Failed("x".into()))),
+                ("docker:build-cache".into(), result(Outcome::DryRun)),
+            ],
+            None,
+        );
+        assert!(!app.docker_marks.contains(&alpine));
+        assert!(app.docker_marks.is_empty());
+        assert_eq!(app.docker_items().len(), before - 1);
+        assert!(app
+            .docker_items()
+            .iter()
+            .all(|i| i.key() != "docker:image:alpine:latest"));
+        assert_eq!(app.results.len(), 3);
+        assert_eq!(app.screen, Screen::Result);
+
+        app.begin_rescan(None, 0);
+        assert!(app.docker.is_none() && app.docker_items().is_empty());
+    }
+
+    #[test]
+    fn unavailable_docker_shows_no_items() {
+        let mut app = app_with(&[("Movies/raw.mov", 2 << 30)]);
+        app.on_scan_event(ScanEvent::Docker(docker::Scan::Unavailable(
+            "Docker 未啟動或無法連線".into(),
+        )));
+        assert!(app.docker_items().is_empty());
+        assert_eq!(app.suggest_rows().len(), Category::ALL.len() + 1);
     }
 }

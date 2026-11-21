@@ -83,6 +83,8 @@ pub enum ScanEvent {
     Done(ScanResult),
     /// 掃描完成後，`git_dirs` 逐一用 git 檢查的結果（呼叫端負責送出）
     Worktrees(Vec<crate::worktree::Worktree>),
+    /// 向 docker 查詢的結果（呼叫端負責送出；可能比 `Done` 早到）
+    Docker(crate::docker::Scan),
 }
 
 #[derive(Debug, Clone, Copy)]

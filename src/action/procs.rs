@@ -1,22 +1,13 @@
 use std::process::{Command, Stdio};
 
-/// 清理時這個 App 應處於的狀態
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Expect {
-    /// 直接刪檔的規則：App 執行中會一邊寫入，建議先關閉
-    Quit,
-    /// 用官方指令清理的規則：App 必須正在執行，指令才會成功
-    Running { command: &'static str },
-}
-
+/// 直接刪檔的規則對應的 App：執行中會一邊寫入，建議先關閉再清理
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ToolApp {
     pub name: &'static str,
     pub process: &'static str,
-    pub expect: Expect,
 }
 
-/// (規則 id, App)。OrbStack 規則沒有可自動執行的指令、不會被核准，所以不在此列。
+/// (規則 id, App)。Docker / OrbStack 的目錄規則沒有可自動執行的指令、不會被核准，所以不在此列。
 const APPS: &[(&str, ToolApp)] = &[
     ("xcode-derived-data", XCODE),
     ("xcode-archives", XCODE),
@@ -26,15 +17,6 @@ const APPS: &[(&str, ToolApp)] = &[
         ToolApp {
             name: "Simulator",
             process: "Simulator",
-            expect: Expect::Quit,
-        },
-    ),
-    (
-        "docker",
-        ToolApp {
-            name: "Docker Desktop",
-            process: "com.docker.backend",
-            expect: Expect::Running { command: "docker" },
         },
     ),
 ];
@@ -42,7 +24,6 @@ const APPS: &[(&str, ToolApp)] = &[
 const XCODE: ToolApp = ToolApp {
     name: "Xcode",
     process: "Xcode",
-    expect: Expect::Quit,
 };
 
 /// 依顯示名稱去重。
@@ -78,13 +59,8 @@ fn warnings_with<'a>(
 ) -> Vec<String> {
     apps_for_rules(rule_ids)
         .into_iter()
-        .filter_map(|app| match (app.expect, running(app.process)) {
-            (Expect::Quit, true) => Some(format!("{} 正在執行，建議先關閉再清理", app.name)),
-            (Expect::Running { command }, false) => {
-                Some(format!("{} 未執行，{command} 指令會失敗", app.name))
-            }
-            _ => None,
-        })
+        .filter(|app| running(app.process))
+        .map(|app| format!("{} 正在執行，建議先關閉再清理", app.name))
         .collect()
 }
 
@@ -97,11 +73,11 @@ mod tests {
         let apps = apps_for_rules([
             "xcode-derived-data",
             "xcode-archives",
-            "docker",
+            "simulator",
             "npm-cache",
         ]);
         let names: Vec<&str> = apps.iter().map(|a| a.name).collect();
-        assert_eq!(names, vec!["Xcode", "Docker Desktop"]);
+        assert_eq!(names, vec!["Xcode", "Simulator"]);
     }
 
     #[test]
@@ -115,15 +91,6 @@ mod tests {
             ]
         );
         assert!(warnings_with(ids, |_| false).is_empty());
-    }
-
-    #[test]
-    fn docker_warns_only_when_not_running() {
-        assert_eq!(
-            warnings_with(["docker"], |_| false),
-            vec!["Docker Desktop 未執行，docker 指令會失敗"]
-        );
-        assert!(warnings_with(["docker"], |_| true).is_empty());
     }
 
     #[test]
