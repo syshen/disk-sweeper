@@ -23,7 +23,6 @@ Docker 佔的空間在 VM 磁碟裡，目錄掃描只看得到一個大檔案。
 **非目標**
 
 - 不處理執行中的 container、使用中的 image 與 volume（不列出）
-- 不刪具名 volume（只顯示）
 - 不支援多個 context 同時掃描，也不啟動 Docker
 - 不回收 Docker Desktop `Docker.raw` 的稀疏空間
 
@@ -56,7 +55,7 @@ Docker 佔的空間在 VM 磁碟裡，目錄掃描只看得到一個大檔案。
 | 沒被使用的 image | `Containers == 0`（含 dangling） | 每個一列 | 可重建 | `docker image rm <repo:tag 或 id>` |
 | 已停止的 container | state 為 `exited` / `created` / `dead` | 每個一列 | 無法復原 | `docker container rm <id>` |
 | Build cache | `InUse == false` 且 `Shared == false` 的總和 > 0 | 合併成一列 | 可重建 | `docker builder prune -f` |
-| 具名 volume | `Links == 0`，不符合匿名條件 | 每個一列 | 受保護（不可標記） | — |
+| 具名 volume | `Links == 0`，不符合匿名條件 | 每個一列 | 無法復原 | `docker volume rm <name>` |
 
 - **大小**：image 用 `UniqueSize`（和 Docker 自己算的 reclaimable 一致），說明中另外標出與其他 image 共用的大小。小項目的隱藏門檻（10MB）對 image 改用完整 `Size` 判斷，避免「獨占很小但共用很大」的 image 被藏起來
 - **Build cache** 是唯一用 prune 的：它沒有「逐筆移除」的對應指令，而且內容純粹可重建
@@ -68,7 +67,7 @@ Docker 佔的空間在 VM 磁碟裡，目錄掃描只看得到一個大檔案。
 
 - `safety::review_docker(item, ctx) -> DockerVerdict`，核准後得到欄位私有的 `ApprovedDocker`；`action::execute_docker` 只接受它
 - 審核內容：項目必須是可移除的分級；`docker` 必須在 PATH 找到（記下絕對路徑，執行時不再查 PATH）；所有要放進指令列的名稱與 id 必須符合 `[A-Za-z0-9][A-Za-z0-9_.:/@-]*`，否則拒絕（防止被當成選項）
-- 確認畫面：只要含無法復原的項目就必須輸入 `yes`
+- 確認畫面：只要含無法復原的項目就必須輸入 `yes`；含具名 volume 時另外顯示警告（可能是資料庫等資料）
 - 執行前**重查一次** `docker system df -v`，用同一套分級重新判斷：已不存在 → 略過；變成使用中 → 略過。合併的匿名 volume 逐個判斷，只移除仍符合條件的
 - 透過 `docker::Runner` trait 執行指令（測試注入假的）；指令一律不加 `-f`（`builder prune -f` 的 `-f` 只是略過互動確認）
 - `--dry-run`：不重查、不執行，結果列出「將執行：…」
@@ -90,3 +89,7 @@ Docker 佔的空間在 VM 磁碟裡，目錄掃描只看得到一個大檔案。
 - UI：Suggest 與確認畫面的快照
 
 測試不會呼叫真正的 `docker`。
+
+## 9. 變更紀錄
+
+- 2026-11-25：具名 volume 改為可移除（原本只顯示）。沒被使用的具名 volume 多半是 compose 專案的資料庫資料，常是 Docker 裡最大的一塊；`docker volume prune` 在 Docker 23 之後只清匿名 volume，清不到它們，`prune -a` 又是「當下全部」。做法：分級為「無法復原」，必須逐列標記並輸入 `yes`，描述標出所屬的 compose 專案，確認畫面另外警告；重查時已被 container 使用就略過。仍然不用 `volume prune`。

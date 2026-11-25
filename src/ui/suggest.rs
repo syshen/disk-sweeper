@@ -29,7 +29,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
                     note = "  檢查中…";
                 }
                 if cat == Category::Docker {
-                    // 總量只算可以移除的；具名 volume 只是列出來參考
+                    // 總量只算可以移除的
                     for i in app.visible_docker() {
                         let item = &app.docker_items()[i];
                         count += 1;

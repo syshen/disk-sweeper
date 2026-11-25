@@ -591,7 +591,15 @@ impl App {
             || approved
                 .iter()
                 .any(|t| matches!(t.handling(), Handling::Trash | Handling::RemoveWorktree));
-        let warnings = procs::running_app_warnings(approved.iter().filter_map(|t| t.rule_id()));
+        let mut warnings = procs::running_app_warnings(approved.iter().filter_map(|t| t.rule_id()));
+        let named = docker_approved()
+            .filter(|i| matches!(i.object, docker::Object::NamedVolume { .. }))
+            .count();
+        if named > 0 {
+            warnings.push(format!(
+                "含 {named} 個具名 volume：可能是資料庫等資料，刪除後無法復原"
+            ));
+        }
         self.confirm = Some(ConfirmState {
             items,
             docker,
@@ -1293,13 +1301,17 @@ mod tests {
     }
 
     #[test]
-    fn protected_docker_items_cannot_be_marked() {
+    fn named_volume_is_marked_row_by_row_and_warned_about() {
         let bin = tempfile::tempdir().unwrap();
         let mut app = docker_app(bin.path());
         select_docker(&mut app, "docker:volume:odoo-demo_odoo19-db");
         app.on_key(key(' '));
-        assert!(app.docker_marks.is_empty());
-        assert!(app.status.as_deref().unwrap().starts_with("無法標記"));
+        assert_eq!(app.marked_count(), 1);
+        app.on_key(key('d'));
+        let state = app.confirm.as_ref().unwrap();
+        assert!(state.need_typed);
+        assert!(matches!(state.docker[..], [DockerVerdict::Approved(_)]));
+        assert!(state.warnings.iter().any(|w| w.contains("1 個具名 volume")));
     }
 
     #[test]

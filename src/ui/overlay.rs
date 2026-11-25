@@ -72,7 +72,7 @@ pub fn draw_help(f: &mut Frame, area: Rect) {
         " Explore：瀏覽目錄大小；space 可標記任何項目（未比對到規則的一律移到垃圾桶）",
         " Suggest：依內建規則列出可清理項目；在類別上按 space 整組標記",
         " Git worktree：乾淨且 commit 都還在其他 branch / remote / tag 的才可移除（移到垃圾桶＋prune，branch 保留）",
-        " Docker：只列沒有 container 使用的 image / 匿名 volume、已停止的 container；具名 volume 不可標記",
+        " Docker：只列沒有 container 使用的 image / volume、已停止的 container",
         "",
         " ↑↓ / j k    移動",
         " → / l / ⏎   進入目錄（Suggest：展開或收合類別）",

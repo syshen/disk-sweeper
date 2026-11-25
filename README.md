@@ -5,7 +5,7 @@ A fast, safety-first TUI disk cleaner for macOS, written in Rust.
 
 - **看懂空間去哪了**：平行掃描 `$HOME`，逐層瀏覽哪些目錄最佔空間
 - **安全地清出空間**：內建規則找出可以清掉的東西（Xcode DerivedData、`node_modules`、套件管理器快取、App 快取、舊安裝檔……），標出風險等級與刪除後果，確認後才動手
-- **Docker 與 Git worktree 也看得到**：列出沒在用的 image、匿名 volume、已停止的 container，以及可以安全移除的 worktree
+- **Docker 與 Git worktree 也看得到**：列出沒在用的 image、volume、已停止的 container，以及可以安全移除的 worktree
 
 介面文字為台灣正體中文。
 
@@ -72,7 +72,7 @@ Docker 的資料在 VM 磁碟裡，目錄掃描只看得到一個大檔案，所
 | image（含沒有 tag 的） | 沒有任何 container 使用 | 可重建 | `docker image rm` |
 | 已停止的 container | 狀態是 exited / created / dead | 無法復原 | `docker container rm` |
 | build cache | 沒在使用、也沒和 image 共用 | 可重建 | `docker builder prune -f` |
-| 具名 volume | 沒有任何 container 使用 | 受保護 | 只顯示，不可標記 |
+| 具名 volume（每個一列） | 沒有任何 container 使用 | 無法復原 | `docker volume rm <name>`；確認畫面另外警告 |
 
 執行中的 container、使用中的 image 與 volume 完全不會列出。
 

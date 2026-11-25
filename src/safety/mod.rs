@@ -810,10 +810,9 @@ mod tests {
             )),
             "受保護的項目"
         );
-        // 就算分級被寫錯，具名 volume 沒有移除指令，一樣過不了
         assert!(matches!(
             review_docker(docker_item(named, Risk::DockerData), &ctx),
-            DockerVerdict::Rejected { .. }
+            DockerVerdict::Approved(_)
         ));
         assert!(matches!(
             review_docker(

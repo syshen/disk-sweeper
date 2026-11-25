@@ -9,7 +9,7 @@
 //! - 沒有 container 使用的 image（含 dangling）——可重新 pull / build
 //! - 已停止的 container——容器內沒存到 volume 的變更會消失
 //! - 沒在使用、也沒和 image 共用的 build cache——可重建
-//! - 沒有 container 使用的**具名** volume——只顯示，不可標記
+//! - 沒有 container 使用的**具名** volume（每個一列）——常是資料庫等資料，刪了救不回
 //!
 //! 執行中的 container、使用中的 image 與 volume 一律不列出。
 //!
@@ -270,14 +270,23 @@ pub fn classify(json: &str) -> Result<Vec<Item>, String> {
             anon.push(name);
             anon_size += size;
         } else {
+            let labels = field(v, "Labels");
+            let project = labels
+                .split(',')
+                .find_map(|kv| kv.strip_prefix("com.docker.compose.project="))
+                .filter(|p| !p.is_empty());
+            let owner = match project {
+                Some(p) => format!("compose 專案 {p} 的具名 volume"),
+                None => "具名 volume".into(),
+            };
             items.push(Item {
                 description: format!(
-                    "具名 volume，目前沒有 container 使用 · 保留：可能是你的資料，確定不要再自行執行 docker volume rm {name}"
+                    "{owner}，目前沒有 container 使用 · 可能是資料庫等資料，刪除後無法復原；確定不再需要才移除"
                 ),
                 object: Object::NamedVolume { name },
                 size,
                 full_size: size,
-                risk: Risk::Protected,
+                risk: Risk::DockerData,
             });
         }
     }
@@ -389,7 +398,10 @@ pub fn commands(object: &Object) -> Vec<(String, Vec<String>)> {
             .iter()
             .map(|n| cmd(format!("docker:volume:{n}"), &["volume", "rm", n]))
             .collect(),
-        Object::NamedVolume { .. } => Vec::new(),
+        Object::NamedVolume { name } => vec![cmd(
+            format!("docker:volume:{name}"),
+            &["volume", "rm", name],
+        )],
     }
 }
 
@@ -409,13 +421,12 @@ pub fn names(object: &Object) -> Vec<&str> {
 pub fn recheck(object: &Object, fresh: &[Item]) -> Result<Object, String> {
     const GONE: &str = "已不存在或正在使用中";
     match object {
-        Object::NamedVolume { .. } => Err("具名 volume 不自動移除".into()),
         Object::BuildCache => fresh
             .iter()
             .any(|i| i.object == Object::BuildCache)
             .then(|| object.clone())
             .ok_or_else(|| "已沒有可清的 build cache".into()),
-        Object::Image { .. } => fresh
+        Object::Image { .. } | Object::NamedVolume { .. } => fresh
             .iter()
             .any(|i| &i.object == object)
             .then(|| object.clone())
@@ -579,12 +590,19 @@ mod tests {
     }
 
     #[test]
-    fn unused_named_volume_is_shown_but_protected() {
+    fn unused_named_volume_is_removable_one_by_one() {
         let items = items();
         let v = find(&items, "docker:volume:odoo-demo_odoo19-db");
-        assert_eq!(v.risk, Risk::Protected);
-        assert!(!v.removable());
-        assert!(commands(&v.object).is_empty());
+        assert_eq!(v.risk, Risk::DockerData);
+        assert!(v.removable());
+        assert!(v.description.contains("compose 專案 odoo-demo"));
+        assert_eq!(
+            commands(&v.object),
+            [(
+                "docker:volume:odoo-demo_odoo19-db".to_string(),
+                vec!["volume".into(), "rm".into(), "odoo-demo_odoo19-db".into()]
+            )]
+        );
         // 使用中的具名 volume 不列出
         assert!(items.iter().all(|i| i.key() != "docker:volume:mars_pg"));
     }
@@ -721,13 +739,15 @@ mod tests {
         };
         assert!(recheck(&running, &fresh).is_err());
         assert!(recheck(&Object::BuildCache, &[]).is_err());
-        assert!(recheck(
-            &Object::NamedVolume {
-                name: "odoo-demo_odoo19-db".into()
-            },
-            &fresh
-        )
-        .is_err());
+        let named = Object::NamedVolume {
+            name: "odoo-demo_odoo19-db".into(),
+        };
+        assert_eq!(recheck(&named, &fresh), Ok(named.clone()));
+        // 重查時已有 container 使用（不在清單裡）就不動
+        let in_use = Object::NamedVolume {
+            name: "mars_pg".into(),
+        };
+        assert!(recheck(&in_use, &fresh).is_err());
     }
 
     #[test]
